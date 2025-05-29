@@ -1,0 +1,26 @@
+# Copy this to .env and fill in your actual API keys
+
+# OpenRouter API (for GPT-4o-mini summarization and script generation)
+OPENROUTER_API_KEY=your_openrouter_api_key_here
+
+# ElevenLabs TTS API
+ELEVENLABS_API_KEY=your_elevenlabs_api_key_here
+
+# OpenAI TTS API (alternative)
+OPENAI_API_KEY=your_openai_api_key_here
+
+# Azure Speech Services (alternative)
+AZURE_SPEECH_KEY=your_azure_speech_key_here
+AZURE_SPEECH_REGION=your_azure_region_here
+
+# Default TTS backend (eleven, openai, azure, coqui)
+DEFAULT_TTS_BACKEND=eleven
+
+# Default voices for male and female speakers
+DEFAULT_FEMALE_VOICE=female_1
+DEFAULT_MALE_VOICE=male_2
+
+# Audio settings
+OUTPUT_BITRATE=192k
+TARGET_WORDS=900
+TARGET_MINUTES=8 
