@@ -17,14 +17,15 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class SummaryConfig:
-    """Configuration for summarization"""
-    model: str = "openai/gpt-4o-mini"
-    max_tokens: int = 500
-    temperature: float = 0.7
+class SummarizerConfig:
+    """Configuration for PDF summarization"""
+    model: str = "openai/gpt-4o"
+    max_tokens: int = 4096
+    temperature: float = 0.3
+    timeout: int = 60
+    max_retries: int = 3
     target_length: str = "short"  # short, medium, long
     preserve_technical: bool = True
-    preserve_language: bool = True
 
 
 class OpenRouterSummarizer:
@@ -81,7 +82,7 @@ class OpenRouterSummarizer:
             logger.error(f"Unexpected error in API request: {e}")
             raise
     
-    def summarize(self, text: str, config: Optional[SummaryConfig] = None) -> str:
+    def summarize(self, text: str, config: Optional[SummarizerConfig] = None) -> str:
         """
         Summarize text using OpenRouter API
         
@@ -99,22 +100,40 @@ class OpenRouterSummarizer:
         if not text or not text.strip():
             raise ValueError("Input text is empty")
         
-        config = config or SummaryConfig()
+        config = config or SummarizerConfig()
         
         with PipelineTimer("Text summarization", logger):
-            # Build prompt based on configuration
-            prompt = self._build_summary_prompt(text, config)
-            
             payload = {
                 "model": config.model,
                 "messages": [
                     {
                         "role": "system",
-                        "content": "You are an expert editor and content summarizer. Your task is to create concise, accurate summaries that preserve the essential information and technical details of the source material."
+                        "content": """Bạn là một trợ lý học thuật có năng lực phân tích và giải thích tài liệu giảng dạy từ nhiều lĩnh vực khác nhau. Dưới đây là nội dung trích xuất từ một tài liệu PDF. Hãy đọc kỹ và thực hiện phân tích một cách **chuyên sâu**, **chính xác**, **khách quan**, **theo đúng mạch của tài liệu**.
+
+Tiến hành theo trình tự sau:
+
+---
+
+### 1. Giới thiệu tổng quan
+
+* Mở đầu bằng câu:
+  **"Chúng ta sẽ cùng tìm hiểu về [tên hoặc mô tả lĩnh vực, chủ đề] với người trình bày là [tên giảng viên nếu có – nếu không, bỏ qua]."**
+* Mô tả ngắn gọn lĩnh vực này thuộc ngành nào.
+* Nêu lý do tại sao chủ đề này quan trọng.
+* Trình bày ứng dụng của chủ đề.
+
+---
+
+### 2. Phân tích nội dung
+
+* Phân tích từng phần nội dung theo đúng trình tự tài liệu, không bỏ sót phần nào
+* Quá trình phân tích phải chuyên sâu, chi tiết. Không chỉ đưa ra thông tin mà còn phải giải thích cặn kẽ tại sao, như thế nào
+* Giải thích rõ ràng các khái niệm, định nghĩa, công thức, mô hình, quy trình, thuật ngữ.
+* Với phần phức tạp, khó hiểu nên dùng ví dụ minh họa để giải thích. Chú thích rõ **ELI5**"""
                     },
                     {
                         "role": "user",
-                        "content": prompt
+                        "content": text
                     }
                 ],
                 "max_tokens": config.max_tokens,
@@ -157,49 +176,6 @@ class OpenRouterSummarizer:
             except Exception as e:
                 logger.error(f"Summarization failed: {e}")
                 raise
-    
-    def _build_summary_prompt(self, text: str, config: SummaryConfig) -> str:
-        """Build summarization prompt based on configuration"""
-        
-        # Length targets
-        length_targets = {
-            "short": "under 400 words",
-            "medium": "400-600 words", 
-            "long": "600-800 words"
-        }
-        target_length = length_targets.get(config.target_length, "under 400 words")
-        
-        # Base prompt
-        prompt_parts = [
-            f"Summarize the following text in {target_length}.",
-        ]
-        
-        # Add technical preservation instruction
-        if config.preserve_technical:
-            prompt_parts.append(
-                "Preserve all technical terms, key concepts, methodologies, and important findings. "
-                "Maintain the technical accuracy and depth of the original content."
-            )
-        
-        # Add language preservation instruction
-        if config.preserve_language:
-            prompt_parts.append(
-                "Write the summary in the same language as the source material. "
-                "Maintain the tone and style appropriate for the subject matter."
-            )
-        
-        # Add content guidelines
-        prompt_parts.extend([
-            "Focus on the main arguments, key insights, and practical implications.",
-            "Structure the summary with clear paragraphs and logical flow.",
-            "Ensure the summary can stand alone and provides value to readers.",
-            "",
-            "Source text:",
-            "",
-            text
-        ])
-        
-        return "\n".join(prompt_parts)
 
 
 def llm_summary(text: str, 
@@ -218,7 +194,7 @@ def llm_summary(text: str,
     Returns:
         Summarized text
     """
-    config = SummaryConfig(
+    config = SummarizerConfig(
         target_length=target_len,
         preserve_technical=preserve_technical
     )

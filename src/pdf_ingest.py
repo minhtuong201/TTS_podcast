@@ -60,8 +60,7 @@ def extract(pdf_path: str | Path,
                 laparams=laparams,
                 maxpages=0,  # Extract all pages
                 password='',
-                caching=True,
-                check_extractable=True
+                caching=True
             )
             
             if not text or not text.strip():

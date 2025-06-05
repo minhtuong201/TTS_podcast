@@ -27,9 +27,6 @@ class TTSConfig:
     stability: float = 0.75     # Voice stability (0.0-1.0, ElevenLabs specific)
     similarity_boost: float = 0.75  # Similarity boost (0.0-1.0, ElevenLabs specific)
     style: float = 0.0          # Style strength (0.0-1.0, ElevenLabs specific)
-    emotion: Optional[str] = None  # Emotion hint for synthesis
-    pause_before: float = 0.0   # Pause before speaking (seconds)
-    pause_after: float = 0.0    # Pause after speaking (seconds)
     format: AudioFormat = AudioFormat.MP3
     sample_rate: int = 44100    # Sample rate in Hz
     bitrate: str = "192k"       # Audio bitrate
@@ -144,32 +141,22 @@ class BaseTTSBackend(ABC):
         """
         pass
     
-    def validate_text(self, text: str) -> bool:
+    def validate_text(self, text: str) -> None:
         """
         Validate text for synthesis
         
         Args:
             text: Text to validate
             
-        Returns:
-            True if text is valid
-            
         Raises:
-            TTSError: If text is invalid
+            ValueError: If text is invalid
         """
         if not text or not text.strip():
-            raise TTSError("Text is empty")
+            raise ValueError("Text cannot be empty")
         
-        # Remove common TTS-unfriendly content
-        cleaned_text = self.clean_text(text)
-        
-        if len(cleaned_text) > self.get_max_text_length():
-            raise AudioTooLongError(f"Text too long: {len(cleaned_text)} characters (max: {self.get_max_text_length()})")
-        
-        if len(cleaned_text.split()) < 1:
-            raise TTSError("Text has no meaningful words")
-        
-        return True
+        max_length = self.get_max_text_length()
+        if len(text) > max_length:
+            raise ValueError(f"Text too long: {len(text)} > {max_length}")
     
     def clean_text(self, text: str) -> str:
         """
@@ -207,65 +194,14 @@ class BaseTTSBackend(ABC):
         """
         return 5000  # Default conservative limit
     
-    def supports_emotion(self) -> bool:
-        """
-        Check if backend supports emotion/style control
-        
-        Returns:
-            True if emotions are supported
-        """
-        return False
-    
     def supports_ssml(self) -> bool:
         """
-        Check if backend supports SSML markup
+        Check if backend supports SSML (Speech Synthesis Markup Language)
         
         Returns:
             True if SSML is supported
         """
-        return False
-    
-    def add_pauses_to_text(self, text: str, pause_before: float = 0.0, pause_after: float = 0.0) -> str:
-        """
-        Add pause markup to text if supported
-        
-        Args:
-            text: Original text
-            pause_before: Pause before speaking (seconds)
-            pause_after: Pause after speaking (seconds)
-            
-        Returns:
-            Text with pause markup
-        """
-        if not self.supports_ssml():
-            return text
-        
-        result = text
-        
-        if pause_before > 0:
-            result = f'<break time="{pause_before}s"/>{result}'
-        
-        if pause_after > 0:
-            result = f'{result}<break time="{pause_after}s"/>'
-        
-        return result
-    
-    def add_emotion_to_text(self, text: str, emotion: Optional[str]) -> str:
-        """
-        Add emotion markup to text if supported
-        
-        Args:
-            text: Original text
-            emotion: Emotion to apply
-            
-        Returns:
-            Text with emotion markup
-        """
-        if not emotion or not self.supports_emotion():
-            return text
-        
-        # Default implementation - subclasses can override
-        return text
+        raise NotImplementedError("Backend must implement supports_ssml()")
     
     def save_audio(self, audio_data: bytes, output_path: Path, format: AudioFormat = AudioFormat.MP3) -> Path:
         """

@@ -1,27 +1,29 @@
 # Core dependencies
-python-dotenv==1.0.0
-requests==2.31.0
-tenacity==8.2.3
+python-dotenv>=1.0.0
+requests>=2.31.0
+tenacity>=8.2.3
 
 # PDF processing
-pdfminer.six==20231228
+pdfminer.six>=20231228
 
 # Language detection
-langdetect==1.0.9
+langdetect>=1.0.9
 
 # LLM API (OpenRouter)
-openai==1.3.8  # Compatible with OpenRouter API
+openai>=1.3.8  # Compatible with OpenRouter API
 
 # Audio processing
-pydub==0.25.1
+pydub>=0.25.1
 
 # TTS services
-elevenlabs==0.2.26
-azure-cognitiveservices-speech==1.34.0
+elevenlabs>=0.2.26
+azure-cognitiveservices-speech>=1.34.0
 
-# Optional: Local TTS (Coqui)
-# TTS==0.21.1  # Uncomment if using Coqui-XTTS
+# Development and testing
+pytest>=7.4.3
+pytest-cov>=4.1.0
+black>=23.11.0
 
-# Development
-pytest==7.4.3
-black==23.11.0 
+# Optional dependencies (install separately if needed):
+# Google Cloud TTS: pip install -r requirements-google.txt
+# Local Coqui TTS: pip install TTS>=0.21.1 torch torchaudio 

@@ -26,12 +26,9 @@ class SpeakerRole(Enum):
 
 @dataclass
 class DialogueLine:
-    """Represents a single line of dialogue"""
+    """Represents a single line of dialogue in the podcast script"""
     speaker: SpeakerRole
     text: str
-    emotion: Optional[str] = None  # happy, surprised, thoughtful, etc.
-    pause_before: float = 0.0  # seconds of pause before this line
-    pause_after: float = 0.0   # seconds of pause after this line
 
 
 @dataclass
@@ -42,10 +39,12 @@ class ScriptConfig:
     host_gender: str = "female"  # female, male
     guest_gender: str = "male"   # female, male
     conversation_style: str = "friendly"  # friendly, professional, casual
-    include_emotions: bool = True
-    include_pauses: bool = True
     language: str = "en"
-    model: str = "openai/gpt-4o-mini"
+    model: str = "openai/gpt-4o"
+    max_tokens: int = 4000
+    temperature: float = 0.7
+    preserve_technical: bool = True
+    target_duration: int = 300  # seconds
 
 
 class ScriptGenerator:
@@ -98,23 +97,94 @@ class ScriptGenerator:
         config = config or ScriptConfig()
         
         with PipelineTimer("Script generation", logger):
-            # Build the dialogue prompt
-            prompt = self._build_dialogue_prompt(summary, config)
-            
             payload = {
                 "model": config.model,
                 "messages": [
                     {
                         "role": "system",
-                        "content": self._get_system_prompt(config)
+                        "content": """## 🎙️ Prompt: Tạo hội thoại podcast từ bản phân tích nội dung PDF
+
+Bạn là người biên tập nội dung podcast. Tôi sẽ cung cấp cho bạn phần **phân tích chi tiết nội dung một tài liệu học thuật**, và bạn cần chuyển nội dung đó thành **một đoạn hội thoại podcast tự nhiên giữa hai người**:
+
+---
+
+### Nhân vật
+- **Host**: là người dẫn dắt podcast, nói chuyện thoải mái, dễ gần, thường mở đầu, chuyển ý và tổng hợp nội dung.
+- **Guest**: là người viết tài liệu hoặc người giảng dạy, trả lời, giải thích và bổ sung thêm thông tin chuyên sâu.
+
+---
+
+### 1. Phong cách ngôn ngữ phải đúng kiểu văn nói đời thực
+
+Hội thoại phải nghe thật tự nhiên, như hai người đang trò chuyện thoải mái. Sử dụng khéo léo các **từ ngữ đời thường**, **âm đệm**, và **những đặc trưng khẩu ngữ sau** để tái tạo cảm giác nói thật
+
+#### Âm đệm, ngập ngừng, kéo dài chữ:
+- Ờmmm-m..., Hừmmm-m..., Àaaa..., Ôôôô-ồ..., chàaa..., Ôiii...
+
+#### Từ cảm thán, bộc lộ cảm xúc:
+- Trời ơi, trời đất ơi, hay quá, nghe có vẻ hay đấy, cái này thú vị này, oke, vâng, đúng rồi.
+
+#### Từ làm mềm câu (cuối câu hỏi hoặc trần thuật):
+- nhỉ, nha. (e.g. đúng không "nhỉ", hay quá "nha")
+
+#### Từ nối, giữ mạch:
+- cái, kiểu, kiểu như, ý là, nói chung là, đơn giản là, hình dung là, ví dụ là, đơn giản như là,...
+
+#### Mở đầu hoặc chuyển ý:
+- à ra thế, à tức là có thể…, vậy là, nhưng mà, tức là, có thể, khả năng cao là do, thì sao.
+
+> **Lưu ý**: 
+- Giữ nguyên cách viết kéo dài chữ hoặc âm ngập ngừng như "Àaaa..." để TTS có thể đọc đúng ngữ điệu nói.
+- Tránh lạm dụng các cấu trúc trên một cách thái quá. Không dùng cho các phần cần nói rành mạch như phần mở đầu giới thiệu khách mời, chủ đề hay phần kết thúc tạm biệt mọi người
+
+---
+
+### 2. Mẫu chen ngang ngắn – phản ứng tự nhiên giữa chừng
+
+Những câu rất ngắn, dùng để:
+- phản ứng nhanh khi người kia đang nói dở,
+- xác nhận lại thông tin,
+- thể hiện sự hứng thú, đồng tình, ngạc nhiên,…
+
+Mỗi câu là một dòng độc lập. Ví dụ:
+
+- À ra thế...
+- Vâng.
+- Ôôôô-ồ... hay quá.
+- Chàaa... cái này nghe thú vị đấy ha.
+- Ờ đúng rồi.
+- Hay đấy nha.
+- Ààà hiểu rồi...
+- Ờ cái này nghe quen quen...
+
+---
+
+### 3. Cách trình bày hội thoại
+
+- Ghi rõ tên người nói ở đầu dòng:
+  - `HOST: ` cho người dẫn chương trình
+  - `GUEST: ` cho người được mời
+- Mỗi câu một dòng.
+- Viết toàn bộ nội dung dưới dạng văn nói liền mạch, như một đoạn hội thoại tự nhiên. Không dùng gạch đầu dòng, không kí tự đặc biệt, không markdown, không chia mục, giữ nguyên dạng raw text.
+---
+
+### 4. Nội dung phải dựa hoàn toàn vào phân tích PDF
+
+- Tuân theo đúng **trình tự nội dung** trong bản phân tích PDF.
+- Không tự chế, không thêm thông tin mới.
+- Có thể diễn đạt lại, đơn giản hóa, mở rộng tự nhiên nhưng **không rời xa nội dung gốc**.
+
+---
+
+**Tôi sẽ cung cấp phần nội dung phân tích. Dựa trên đó, hãy tạo ra hội thoại theo định dạng và yêu cầu trên.**"""
                     },
                     {
                         "role": "user",
-                        "content": prompt
+                        "content": summary
                     }
                 ],
-                "max_tokens": 2000,
-                "temperature": 0.8,
+                "max_tokens": config.max_tokens,
+                "temperature": config.temperature,
                 "top_p": 0.9,
                 "frequency_penalty": 0.2,
                 "presence_penalty": 0.1
@@ -125,6 +195,9 @@ class ScriptGenerator:
                 
                 response = self._make_request(payload)
                 script_text = response['choices'][0]['message']['content'].strip()
+                
+                # Debug: Log the raw script text
+                logger.debug(f"Raw script response: {script_text[:500]}...")
                 
                 # Parse script into dialogue lines
                 dialogue_lines = self._parse_script(script_text, config)
@@ -144,7 +217,6 @@ class ScriptGenerator:
                     'word_accuracy': total_words / config.target_words if config.target_words > 0 else 0,
                     'host_lines': sum(1 for line in dialogue_lines if line.speaker == SpeakerRole.HOST),
                     'guest_lines': sum(1 for line in dialogue_lines if line.speaker == SpeakerRole.GUEST),
-                    'emotional_lines': sum(1 for line in dialogue_lines if line.emotion),
                     'prompt_tokens': usage.get('prompt_tokens', 0),
                     'completion_tokens': usage.get('completion_tokens', 0),
                 }
@@ -158,51 +230,6 @@ class ScriptGenerator:
                 logger.error(f"Script generation failed: {e}")
                 raise
     
-    def _get_system_prompt(self, config: ScriptConfig) -> str:
-        """Get system prompt based on configuration"""
-        
-        host_pronoun = "she/her" if config.host_gender == "female" else "he/him"
-        guest_pronoun = "she/her" if config.guest_gender == "female" else "he/him"
-        
-        return f"""You are an expert podcast script writer. Your task is to create engaging, natural dialogue between two people discussing interesting content.
-
-CHARACTER SETUP:
-- HOST ({config.host_gender.upper()}): A curious, engaging podcast host who asks thoughtful questions and guides the conversation. Pronouns: {host_pronoun}
-- GUEST ({config.guest_gender.upper()}): A knowledgeable expert who explains concepts clearly and enthusiastically. Pronouns: {guest_pronoun}
-
-DIALOGUE REQUIREMENTS:
-- Write in {config.language}
-- Target: {config.target_words} words total (~{config.target_minutes} minutes of audio)
-- Use natural, conversational language with contractions
-- Include emotional expressions in [brackets] like [laughs], [chuckles], [pause], [thoughtful], [excited]
-- Add natural conversation elements: "Well...", "You know...", "That's fascinating!", "Hmm..."
-- Use varied sentence lengths and speaking patterns
-- Include questions, reactions, and back-and-forth exchanges
-- Each line should start with "HOST:" or "GUEST:"
-
-CONVERSATION STYLE: {config.conversation_style}
-- Make it sound like a real conversation between intelligent people
-- Include moments of discovery, surprise, and engagement
-- Use appropriate pauses and emotional beats
-- Ensure both speakers contribute meaningfully"""
-    
-    def _build_dialogue_prompt(self, summary: str, config: ScriptConfig) -> str:
-        """Build the main dialogue generation prompt"""
-        
-        return f"""Convert the following summary into an engaging {config.target_minutes}-minute podcast dialogue between a HOST and GUEST.
-
-The conversation should:
-- Cover all main points from the summary naturally
-- Include genuine reactions, questions, and discoveries
-- Have a clear introduction, development, and conclusion
-- Feel spontaneous while being informative
-- Include natural speaking elements and emotions
-
-SUMMARY TO CONVERT:
-{summary}
-
-Please write the complete dialogue script with emotional annotations and natural conversation flow."""
-    
     def _parse_script(self, script_text: str, config: ScriptConfig) -> List[DialogueLine]:
         """Parse generated script text into DialogueLine objects"""
         
@@ -214,98 +241,41 @@ Please write the complete dialogue script with emotional annotations and natural
             if not line:
                 continue
             
-            # Parse speaker
-            if line.startswith('HOST:'):
-                speaker = SpeakerRole.HOST
-                text = line[5:].strip()
-            elif line.startswith('GUEST:'):
-                speaker = SpeakerRole.GUEST
-                text = line[6:].strip()
-            else:
-                # Skip lines without speaker tags
-                continue
-            
-            if not text:
-                continue
-            
-            # Extract emotions and pauses from text
-            emotion, pause_before, pause_after, clean_text = self._extract_annotations(text)
-            
-            dialogue_line = DialogueLine(
-                speaker=speaker,
-                text=clean_text,
-                emotion=emotion,
-                pause_before=pause_before,
-                pause_after=pause_after
-            )
-            
-            lines.append(dialogue_line)
+            # Extract basic dialogue structure
+            dialogue_match = re.match(r'(HOST|GUEST):\s*(.+)', line)
+            if dialogue_match:
+                role_str, text = dialogue_match.groups()
+                speaker = SpeakerRole(role_str)
+                
+                # Clean and process text (removed emotion extraction)
+                clean_text = self._clean_dialogue_text(text)
+                
+                dialogue_line = DialogueLine(
+                    speaker=speaker,
+                    text=clean_text
+                )
+                
+                lines.append(dialogue_line)
         
         return lines
     
-    def _extract_annotations(self, text: str) -> Tuple[Optional[str], float, float, str]:
-        """Extract emotion and pause annotations from text"""
+    def _clean_dialogue_text(self, text: str) -> str:
+        """Clean dialogue text by removing unwanted characters and formatting"""
+        # Remove all annotation patterns from text
+        clean_text = re.sub(r'\([^)]*\)', '', text).strip()
         
-        emotion = None
-        pause_before = 0.0
-        pause_after = 0.0
-        
-        # Extract emotions in brackets
-        emotion_pattern = r'\[([^\]]+)\]'
-        emotions = re.findall(emotion_pattern, text)
-        
-        if emotions:
-            # Use the first emotion found
-            emotion = emotions[0].lower()
-            
-            # Convert some emotions to pauses
-            if emotion in ['pause', 'long pause', 'thoughtful pause']:
-                if 'long' in emotion:
-                    pause_before = 1.5
-                else:
-                    pause_before = 0.8
-                emotion = None
-            elif emotion in ['end pause', 'trailing off']:
-                pause_after = 1.0
-                emotion = None
-        
-        # Remove all bracketed annotations from text
-        clean_text = re.sub(emotion_pattern, '', text).strip()
-        
-        # Clean up extra spaces
-        clean_text = re.sub(r'\s+', ' ', clean_text)
-        
-        return emotion, pause_before, pause_after, clean_text
+        return clean_text
     
     def _enhance_dialogue(self, dialogue_lines: List[DialogueLine], config: ScriptConfig) -> List[DialogueLine]:
         """Enhance dialogue with better timing and flow"""
-        
         enhanced_lines = []
         
         for i, line in enumerate(dialogue_lines):
-            # Add natural pauses between speakers
-            if i > 0 and dialogue_lines[i-1].speaker != line.speaker:
-                # Different speaker, add small pause
-                if line.pause_before == 0.0:
-                    line.pause_before = 0.3
-            
-            # Add pauses for longer sentences
-            word_count = len(line.text.split())
-            if word_count > 25 and line.pause_after == 0.0:
-                line.pause_after = 0.5
-            
-            # Ensure we have some emotional variety
-            if config.include_emotions and not line.emotion and len(line.text.split()) > 15:
-                # Add subtle emotions based on content
-                text_lower = line.text.lower()
-                if any(word in text_lower for word in ['interesting', 'fascinating', 'amazing', 'incredible']):
-                    line.emotion = 'interested'
-                elif any(word in text_lower for word in ['funny', 'humor', 'joke']):
-                    line.emotion = 'amused'
-                elif line.text.endswith('?'):
-                    line.emotion = 'curious'
-            
-            enhanced_lines.append(line)
+            enhanced_line = DialogueLine(
+                speaker=line.speaker,
+                text=line.text
+            )
+            enhanced_lines.append(enhanced_line)
         
         return enhanced_lines
 
@@ -359,16 +329,9 @@ def dialogue_to_text(dialogue_lines: List[DialogueLine], include_annotations: bo
         text = line.text
         
         if include_annotations:
-            # Add pause annotations
-            if line.pause_before > 0.5:
-                text = f"[pause] {text}"
-            
             # Add emotion annotations
             if line.emotion:
                 text = f"[{line.emotion}] {text}"
-            
-            if line.pause_after > 0.5:
-                text = f"{text} [pause]"
         
         lines.append(f"{speaker_tag}: {text}")
     

@@ -114,140 +114,109 @@ class CoquiTTSBackend(TTSBackend):
         logger.warning(f"Voice sample not found for {voice_id}, using default synthesis")
         return None
     
-    def _extract_emotion_from_text(self, text: str) -> tuple[str, str]:
-        """Extract emotion annotations and clean text"""
-        import re
-        
-        # Find emotion markers like [laughs], [pause], [excited]
-        emotion_pattern = r'\[([^\]]+)\]'
-        emotion_matches = re.findall(emotion_pattern, text)
-        cleaned_text = re.sub(emotion_pattern, '', text).strip()
-        
-        # Map emotions to speech adjustments
-        emotion = emotion_matches[0].lower() if emotion_matches else 'neutral'
-        
-        return cleaned_text, emotion
-    
-    def _adjust_for_emotion(self, text: str, emotion: str) -> str:
-        """Adjust text for emotional expression"""
-        # Add SSML-like adjustments for emotional expression
-        if emotion in ['laugh', 'chuckle', 'happy']:
-            # Add slight pauses and emphasis
-            text = text.replace('.', '... ')  # Extend pauses
-            text = text.replace('!', '! ')    # Add emphasis
-        elif emotion in ['pause', 'thoughtful']:
-            # Add longer pauses
-            text = text.replace(',', ', ... ')
-            text = text.replace('.', ' ... ')
-        elif emotion in ['excited', 'surprised']:
-            # Add emphasis and speed
-            text = text.upper() if len(text) < 50 else text  # Short excited phrases
-        
-        return text
-    
-    def synthesize(self, text: str, voice_id: str) -> TTSResult:
+    def synthesize(self, text: str, config: TTSConfig) -> TTSResult:
         """
-        Synthesize text to speech using Coqui XTTS
+        Synthesize text using Coqui TTS
         
         Args:
-            text: Text to synthesize
-            voice_id: Voice identifier for sample selection
+            text: Text to synthesize  
+            config: TTS configuration
             
         Returns:
-            TTSResult with audio data and metadata
+            SynthesisResult with audio data and metadata
         """
-        try:
-            logger.debug(f"Synthesizing with Coqui voice: {voice_id}")
-            
-            # Clean text and extract emotions
-            cleaned_text, emotion = self._extract_emotion_from_text(text)
-            
-            # Adjust text for emotional expression
-            adjusted_text = self._adjust_for_emotion(cleaned_text, emotion)
-            
-            # Get voice sample file
-            speaker_wav = self._create_sample_voice_file(voice_id)
-            
-            # Create temporary output file
-            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_file:
-                output_path = tmp_file.name
-            
+        self.validate_text(text)
+        
+        with PipelineTimer(f"Coqui TTS synthesis ({len(text)} chars)", logger):
             try:
-                # Synthesize using XTTS
-                if speaker_wav and os.path.exists(speaker_wav):
-                    # Voice cloning mode
-                    self.tts.tts_to_file(
-                        text=adjusted_text,
-                        speaker_wav=speaker_wav,
-                        language=self.config.language,
-                        file_path=output_path
-                    )
-                else:
-                    # Use built-in speaker (if available)
-                    available_speakers = getattr(self.tts, 'speakers', None)
-                    if available_speakers:
-                        # Use first available speaker as fallback
-                        speaker = available_speakers[0] if isinstance(available_speakers, list) else None
+                # Clean text and removed emotion processing
+                clean_text = self.clean_text(text)
+                
+                # Synthesize audio
+                wav = self.tts.tts(text=clean_text)
+                
+                # Get voice sample file
+                speaker_wav = self._create_sample_voice_file(config.voice_id)
+                
+                # Create temporary output file
+                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_file:
+                    output_path = tmp_file.name
+                
+                try:
+                    # Synthesize using XTTS
+                    if speaker_wav and os.path.exists(speaker_wav):
+                        # Voice cloning mode
                         self.tts.tts_to_file(
-                            text=adjusted_text,
-                            speaker=speaker,
+                            text=clean_text,
+                            speaker_wav=speaker_wav,
                             language=self.config.language,
                             file_path=output_path
                         )
                     else:
-                        # Basic synthesis without speaker
-                        self.tts.tts_to_file(
-                            text=adjusted_text,
-                            language=self.config.language,
-                            file_path=output_path
-                        )
-                
-                # Read the generated audio file
-                with open(output_path, 'rb') as audio_file:
-                    audio_data = audio_file.read()
-                
-                # Get audio metadata using torchaudio
-                try:
-                    waveform, sample_rate = torchaudio.load(output_path)
-                    duration_seconds = waveform.shape[1] / sample_rate
-                except:
-                    # Fallback duration estimation
-                    duration_seconds = len(audio_data) / (22050 * 2)  # Rough estimate
-                
-                # Clean up temporary file
-                os.unlink(output_path)
-                
-                # Calculate character count and cost (free for local)
-                character_count = len(text)
-                cost_estimate = 0.0  # Local synthesis is free
-                
-                logger.debug(f"Coqui synthesis successful: {duration_seconds:.1f}s, {character_count} chars")
-                
-                return TTSResult(
-                    audio_data=audio_data,
-                    format="wav",
-                    duration_seconds=duration_seconds,
-                    character_count=character_count,
-                    cost_estimate=cost_estimate,
-                    metadata={
-                        'voice_id': voice_id,
-                        'backend': 'coqui',
-                        'emotion': emotion,
-                        'device': self.device,
-                        'model': self.model_name,
-                        'sample_rate': getattr(self, 'sample_rate', 22050)
-                    }
-                )
+                        # Use built-in speaker (if available)
+                        available_speakers = getattr(self.tts, 'speakers', None)
+                        if available_speakers:
+                            # Use first available speaker as fallback
+                            speaker = available_speakers[0] if isinstance(available_speakers, list) else None
+                            self.tts.tts_to_file(
+                                text=clean_text,
+                                speaker=speaker,
+                                language=self.config.language,
+                                file_path=output_path
+                            )
+                        else:
+                            # Basic synthesis without speaker
+                            self.tts.tts_to_file(
+                                text=clean_text,
+                                language=self.config.language,
+                                file_path=output_path
+                            )
+                    
+                    # Read the generated audio file
+                    with open(output_path, 'rb') as audio_file:
+                        audio_data = audio_file.read()
+                    
+                    # Get audio metadata using torchaudio
+                    try:
+                        waveform, sample_rate = torchaudio.load(output_path)
+                        duration_seconds = waveform.shape[1] / sample_rate
+                    except:
+                        # Fallback duration estimation
+                        duration_seconds = len(audio_data) / (22050 * 2)  # Rough estimate
+                    
+                    # Clean up temporary file
+                    os.unlink(output_path)
+                    
+                    # Calculate character count and cost (free for local)
+                    character_count = len(text)
+                    cost_estimate = 0.0  # Local synthesis is free
+                    
+                    logger.debug(f"Coqui synthesis successful: {duration_seconds:.1f}s, {character_count} chars")
+                    
+                    return TTSResult(
+                        audio_data=audio_data,
+                        format="wav",
+                        duration_seconds=duration_seconds,
+                        character_count=character_count,
+                        cost_estimate=cost_estimate,
+                        metadata={
+                            'voice_id': config.voice_id,
+                            'backend': 'coqui',
+                            'device': self.device,
+                            'model': self.model_name,
+                            'sample_rate': getattr(self, 'sample_rate', 22050)
+                        }
+                    )
+                    
+                except Exception as e:
+                    # Clean up temporary file on error
+                    if os.path.exists(output_path):
+                        os.unlink(output_path)
+                    raise e
                 
             except Exception as e:
-                # Clean up temporary file on error
-                if os.path.exists(output_path):
-                    os.unlink(output_path)
-                raise e
-                
-        except Exception as e:
-            logger.error(f"Coqui TTS synthesis failed: {e}")
-            raise
+                logger.error(f"Coqui TTS synthesis failed: {e}")
+                raise
     
     def get_available_voices(self) -> List[Dict]:
         """Get list of available voice samples"""
@@ -331,4 +300,13 @@ class CoquiTTSBackend(TTSBackend):
             
         except Exception as e:
             logger.error(f"Failed to add voice sample: {e}")
-            return False 
+            return False
+
+    def estimate_cost(self, text: str, config: TTSConfig) -> float:
+        # Implementation of estimate_cost method
+        # This method should return a cost estimate for the given text
+        # The implementation should be based on the logic of get_cost_estimate method
+        # and the logic of synthesize method
+        # This is a placeholder and should be implemented
+        return 0.0  # Placeholder return, actual implementation needed
+    

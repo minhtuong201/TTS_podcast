@@ -2,18 +2,18 @@
 
 Convert PDF documents into engaging podcast dialogues using AI summarization, script generation, and text-to-speech synthesis.
 
-## Features
+## 🎯 Features
 
 - **PDF Text Extraction**: Extract and process text from PDF documents
 - **AI Summarization**: Use GPT-4o-mini to create concise summaries
 - **Natural Dialogue Generation**: Create engaging 2-person conversations with natural elements like pauses, laughter, and emotional expressions
-- **Multiple TTS Backends**: Support for ElevenLabs, OpenAI TTS, Azure Speech, and local Coqui-XTTS
+- **Multiple TTS Backends**: Support for ElevenLabs, OpenAI TTS, Azure Speech, Google Cloud TTS, and local Coqui-XTTS
 - **Audio Mixing**: Automatic audio processing and mixing for professional-sounding podcasts
 - **Language Detection**: Automatic language detection with manual override support
 
-## Quick Start
+## 🚀 Quick Start
 
-### 1. Installation
+### Installation
 
 ```bash
 # Clone or download the project
@@ -27,7 +27,7 @@ source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 2. Configuration
+### Configuration
 
 Copy the example environment file and configure your API keys:
 
@@ -46,9 +46,10 @@ ELEVENLABS_API_KEY=your_elevenlabs_api_key_here
 OPENAI_API_KEY=your_openai_api_key_here
 AZURE_SPEECH_KEY=your_azure_speech_key_here
 AZURE_SPEECH_REGION=your_azure_region_here
+GOOGLE_APPLICATION_CREDENTIALS=/path/to/google/credentials.json
 ```
 
-### 3. Basic Usage
+### Basic Usage
 
 ```bash
 # Convert a PDF to podcast (auto-select TTS backend)
@@ -61,9 +62,7 @@ python src/main.py paper.pdf --tts eleven --voices Rachel Josh
 python src/main.py research.pdf --output my_podcast.mp3 --target-words 1200
 ```
 
-## Detailed Usage
-
-### Command Line Options
+## 📖 Command Line Options
 
 ```bash
 python src/main.py PDF_FILE [OPTIONS]
@@ -72,7 +71,7 @@ Required:
   PDF_FILE                  Path to PDF file to process
 
 Optional:
-  --tts {eleven,openai,azure,coqui,auto}
+  --tts {eleven,openai,azure,google,coqui,auto}
                            TTS backend to use (default: auto)
   --voices FEMALE MALE     Voice IDs for female host and male guest
   --output OUTPUT_FILE     Output MP3 file path
@@ -83,31 +82,10 @@ Optional:
   --log-level {DEBUG,INFO,WARNING,ERROR}
                            Logging level (default: INFO)
   --keep-temp              Keep temporary audio files
+  --dual-tts               Generate with both OpenAI and ElevenLabs
 ```
 
-### Examples
-
-#### Basic podcast generation
-```bash
-python src/main.py research_paper.pdf
-```
-
-#### High-quality ElevenLabs voices
-```bash
-python src/main.py document.pdf --tts eleven --voices Rachel Josh
-```
-
-#### Longer format podcast
-```bash
-python src/main.py book_chapter.pdf --target-words 1500 --summary-length medium
-```
-
-#### Force language and output location
-```bash
-python src/main.py spanish_doc.pdf --language es --output podcasts/spanish_episode.mp3
-```
-
-## TTS Backend Configuration
+## 🔊 TTS Backend Configuration
 
 ### ElevenLabs (Recommended)
 - **Quality**: Excellent for podcasts with natural prosody
@@ -116,14 +94,25 @@ python src/main.py spanish_doc.pdf --language es --output podcasts/spanish_episo
 - **Setup**: Get API key from [ElevenLabs](https://elevenlabs.io)
 
 Popular voices:
-- Female: `Rachel`, `Domi`, `Bella`
-- Male: `Josh`, `Antoni`, `Arnold`
+- Female: `Rachel`, `Domi`, `Bella`, `MF3mGyEYCl7XYWbV9V6O` (Elli - Vietnamese)
+- Male: `Josh`, `Antoni`, `Arnold`, `M0rVwr32hdQ5UXpkI3ni` (The Hao - Vietnamese)
 
 ### OpenAI TTS
 - **Quality**: Very good, fewer voices but excellent prosody
 - **Voices**: `alloy`, `echo`, `fable`, `onyx`, `nova`, `shimmer`
 - **Cost**: ~$0.015 per minute of audio
 - **Setup**: Use existing OpenAI API key
+
+### Google Cloud TTS
+- **Quality**: Premium Neural2 voices, 40+ languages
+- **Voices**: `en-US-Neural2-C` (female), `en-US-Neural2-A` (male)
+- **Cost**: 1M characters free/month, then $16 per 1M characters (Neural2)
+- **Setup**: Create service account, download JSON credentials
+
+#### Google Cloud Setup
+1. Install dependencies: `pip install -r requirements-google.txt`
+2. Set credentials: `export GOOGLE_APPLICATION_CREDENTIALS=/path/to/credentials.json`
+3. Test: `python src/main.py document.pdf --tts google`
 
 ### Azure Speech Services
 - **Quality**: Good, 400+ voices in 140+ languages
@@ -135,7 +124,7 @@ Popular voices:
 - **Cost**: Free (requires GPU for best performance)
 - **Setup**: Uncomment `TTS==0.21.1` in requirements.txt
 
-## Natural Dialogue Features
+## 🎭 Natural Dialogue Features
 
 The script generator creates realistic conversations with:
 
@@ -156,7 +145,80 @@ HOST: Ooh, tell me more! [curious]
 GUEST: [thoughtful] So instead of just passing data through layers sequentially...
 ```
 
-## Pipeline Architecture
+## 🔧 Advanced Usage
+
+### Dual TTS Generation
+Generate podcasts with both OpenAI and ElevenLabs for comparison:
+
+```bash
+python src/main.py document.pdf --dual-tts --target-words 150
+```
+
+Creates:
+- `output/{pdf_name}_openai.mp3`
+- `output/{pdf_name}_eleven.mp3`
+- Shared script and summary files
+
+### Custom Voice Configuration
+```bash
+# ElevenLabs with specific voices
+python src/main.py paper.pdf --tts eleven --voices "Rachel" "Josh"
+
+# Google Cloud with Neural2 voices  
+python src/main.py paper.pdf --tts google --voices "en-US-Neural2-C" "en-US-Neural2-A"
+```
+
+### Multi-language Support
+```bash
+# Force Spanish language
+python src/main.py documento.pdf --language es --tts google --voices "es-ES-Neural2-A" "es-ES-Neural2-B"
+```
+
+## 🧪 Testing
+
+Run the comprehensive test suite:
+
+```bash
+# Run all tests
+pytest tests/
+
+# Run tests with verbose output
+pytest tests/ -v
+
+# Run interactive test demonstration
+python tests/test_pipeline.py
+```
+
+## 📊 Output Files
+
+- **Format**: MP3 audio file at 192kbps
+- **Duration**: Approximately 8 minutes (configurable)
+- **Structure**: Natural conversation between female host and male guest
+- **Metadata**: JSON files with processing details and costs
+
+## 🔍 Troubleshooting
+
+### Common Issues
+
+**"No TTS backends available"**
+- Check that at least one API key is configured in `.env`
+- Verify API keys are valid and have sufficient credits
+
+**"PDF extraction failed"**
+- Ensure PDF is text-based (not scanned images)
+- Try with `--target-words` set to a lower value
+
+**"Script generation timeout"**
+- Check OpenRouter API key and credits
+- Reduce `--target-words` for shorter processing
+
+### Enable Debug Logging
+
+```bash
+python src/main.py document.pdf --log-level DEBUG
+```
+
+## 🏗️ Pipeline Architecture
 
 The system follows a clear 8-step process:
 
@@ -169,42 +231,12 @@ The system follows a clear 8-step process:
 7. **Audio Synthesis** - Generate speech for each dialogue line
 8. **Audio Mixing** - Combine and normalize final podcast
 
-## Output
+## 📋 Requirements
 
-- **Format**: MP3 audio file at 192kbps
-- **Duration**: Approximately 8 minutes (configurable)
-- **Structure**: Natural conversation between female host and male guest
-- **Quality**: Professional podcast-ready audio
+- **Python**: 3.8+
+- **OpenRouter API**: Required for summarization and script generation
+- **TTS Provider**: At least one of ElevenLabs, OpenAI, Azure, Google Cloud, or local Coqui
 
-## Troubleshooting
-
-### Common Issues
-
-**"No TTS backends available"**
-- Check that at least one API key is configured in `.env`
-- Verify API keys are valid and have sufficient credits
-
-**"PDF extraction failed"**
-- Ensure PDF is text-based (not scanned images)
-- Try with `--max-chars` to limit extraction
-
-**"Script generation timeout"**
-- Check OpenRouter API key and credits
-- Reduce `--target-words` for shorter processing
-
-### Logging
-
-Enable detailed logging for debugging:
-
-```bash
-python src/main.py document.pdf --log-level DEBUG --log-file pipeline.log
-```
-
-## API Requirements
-
-- **OpenRouter**: Required for summarization and script generation
-- **TTS Provider**: At least one of ElevenLabs, OpenAI, Azure, or local Coqui
-
-## License
+## 📄 License
 
 MIT License - see scaffold.md for full project specifications. 

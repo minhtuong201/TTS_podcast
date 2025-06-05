@@ -20,13 +20,16 @@ from pathlib import Path
 import sys
 import os
 from typing import Optional, List
+import json
+from datetime import datetime
+import requests
 
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent))
 
 from pdf_ingest import extract
 from lang_detect import detect as detect_language
-from summarizer import llm_summary, SummaryConfig
+from summarizer import llm_summary, SummarizerConfig
 from script_gen import ScriptGenerator, ScriptConfig
 from tts.base import TTSConfig
 from tts.eleven import ElevenLabsTTSBackend
@@ -57,15 +60,31 @@ def setup_logging(log_level: str = "INFO", log_file: Optional[str] = None):
 
 def get_available_tts_backends() -> List[str]:
     """Get list of available TTS backends"""
+    logger = logging.getLogger(__name__)
     backends = []
     
-    # Check ElevenLabs
+    # Check ElevenLabs with connectivity test
     if os.getenv('ELEVENLABS_API_KEY'):
-        backends.append('eleven')
+        try:
+            # Quick connectivity test
+            response = requests.get('https://api.elevenlabs.io/v1/voices', 
+                                  headers={'xi-api-key': os.getenv('ELEVENLABS_API_KEY')}, 
+                                  timeout=5)
+            if response.status_code in [200, 401]:  # 401 means API key works, just unauthorized for this endpoint
+                backends.append('eleven')
+                logger.info("ElevenLabs API connectivity: ✓")
+            else:
+                logger.warning(f"ElevenLabs API issue: {response.status_code}")
+        except Exception as e:
+            logger.warning(f"ElevenLabs connectivity test failed: {e}")
     
     # Check OpenAI
     if os.getenv('OPENAI_API_KEY'):
         backends.append('openai')
+    
+    # Check Google Cloud TTS
+    if os.getenv('GOOGLE_APPLICATION_CREDENTIALS'):
+        backends.append('google')
     
     # Check Azure
     if os.getenv('AZURE_SPEECH_KEY') and os.getenv('AZURE_SPEECH_REGION'):
@@ -90,6 +109,9 @@ def create_tts_backend(backend_name: str, language: str, config: TTSConfig):
     elif backend_name == 'openai':
         from tts.openai import OpenAITTSBackend
         return OpenAITTSBackend(config)
+    elif backend_name == 'google':
+        from tts.google import GoogleCloudTTSBackend
+        return GoogleCloudTTSBackend(config)
     elif backend_name == 'azure':
         from tts.azure import AzureTTSBackend
         return AzureTTSBackend(config)
@@ -100,6 +122,103 @@ def create_tts_backend(backend_name: str, language: str, config: TTSConfig):
         raise ValueError(f"Unknown TTS backend: {backend_name}")
 
 
+def process_tts_synthesis(tts_backend_name: str, dialogue_lines, language_code, voices, output_base_path, logger):
+    """Process TTS synthesis for a given backend and return results"""
+    
+    # Set voices based on TTS backend
+    if voices:
+        female_voice, male_voice = voices
+    else:
+        # Default voices for different backends
+        if tts_backend_name == 'eleven':
+            female_voice = "MF3mGyEYCl7XYWbV9V6O"  # Elli - Vietnamese female voice
+            male_voice = "M0rVwr32hdQ5UXpkI3ni"    # The Hao - Vietnamese male voice
+        elif tts_backend_name == 'openai':
+            female_voice = "shimmer"  # OpenAI female voice
+            male_voice = "onyx"       # OpenAI male voice
+        elif tts_backend_name == 'google':
+            female_voice = "en-US-Neural2-C"  # Google Cloud female voice (high quality)
+            male_voice = "en-US-Neural2-A"    # Google Cloud male voice (high quality)
+        else:
+            female_voice = "default_female"
+            male_voice = "default_male"
+    
+    logger.info(f"Processing with {tts_backend_name} TTS backend - Female: {female_voice}, Male: {male_voice}")
+    
+    # Create TTS backend
+    dummy_config = TTSConfig(voice_id=female_voice)
+    tts_backend = create_tts_backend(tts_backend_name, language_code, dummy_config)
+    
+    # Synthesize audio for each dialogue line
+    audio_segments = []
+    total_cost = 0.0
+    
+    with PipelineTimer(f"{tts_backend_name.title()} audio synthesis", logger):
+        for i, line in enumerate(dialogue_lines):
+            logger.debug(f"Synthesizing line {i+1}/{len(dialogue_lines)}: {line.speaker.value} [{tts_backend_name}]")
+            
+            # Determine voice based on speaker
+            voice_id = female_voice if line.speaker.value == "HOST" else male_voice
+            
+            # Create TTS config for this line with voice-specific settings
+            if line.speaker.value == "HOST":
+                # Female voice settings (Elli)
+                tts_config = TTSConfig(
+                    voice_id=voice_id,
+                    speed=1.12,  # Female speed updated
+                    stability=0.5,  # 50% stability for female voice
+                    similarity_boost=0.75,  # 75% similarity boost
+                    style=0.0  # 0% style
+                )
+            else:
+                # Male voice settings (The Hao)
+                tts_config = TTSConfig(
+                    voice_id=voice_id,
+                    speed=1.15,  # Male speed updated
+                    stability=0.25,  # 25% stability for male voice
+                    similarity_boost=0.75,  # 75% similarity boost
+                    style=0.0  # 0% style
+                )
+            
+            # Synthesize the line
+            result = tts_backend.synthesize(line.text, tts_config)
+            
+            # Create audio segment info
+            segment_info = AudioSegmentInfo(
+                audio_data=result.audio_data,
+                duration_seconds=result.duration_seconds,
+                speaker=line.speaker.value.lower(),
+                text=line.text
+            )
+            
+            audio_segments.append(segment_info)
+            total_cost += result.cost_estimate
+            
+            logger.debug(f"Synthesized {result.duration_seconds:.1f}s audio [{tts_backend_name}]")
+    
+    logger.info(f"{tts_backend_name.title()} synthesized {len(audio_segments)} audio segments, estimated cost: ${total_cost:.3f}")
+    
+    # Mix final audio
+    output_path = output_base_path.parent / f"{output_base_path.stem}_{tts_backend_name}.mp3"
+    
+    with PipelineTimer(f"{tts_backend_name.title()} audio mixing", logger):
+        mixer_config = MixingConfig()
+        mixer = AudioMixer(mixer_config)
+        
+        mix_result = mixer.mix_segments(audio_segments, output_path)
+        logger.info(f"{tts_backend_name.title()} podcast created: {output_path}")
+        logger.info(f"Duration: {mix_result['duration_seconds']:.1f}s, Size: {mix_result['file_size_bytes']/1024/1024:.1f}MB")
+    
+    return {
+        'backend': tts_backend_name,
+        'output_path': output_path,
+        'audio_segments': audio_segments,
+        'total_cost': total_cost,
+        'mix_result': mix_result,
+        'voices': {'female': female_voice, 'male': male_voice}
+    }
+
+
 def main():
     """Main pipeline orchestrator"""
     
@@ -108,20 +227,22 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python src/main.py paper.pdf --tts eleven
-  python src/main.py doc.pdf --tts eleven --voices female_1 male_2 --output my_podcast.mp3
+  python src/main.py paper.pdf
+  python src/main.py doc.pdf --voices female_id male_id --output my_podcast.mp3
   python src/main.py research.pdf --summary-length medium --target-words 1200
         """
     )
     
     parser.add_argument('pdf_path', help='Path to PDF file to process')
-    parser.add_argument('--tts', choices=['eleven', 'openai', 'azure', 'coqui', 'auto'], 
-                       default='auto', help='TTS backend to use (default: auto-select)')
+    parser.add_argument('--tts', choices=['eleven', 'openai', 'google', 'azure', 'coqui', 'auto'], 
+                       default='auto', help='TTS backend to use (default: auto-select with fallback)')
+    parser.add_argument('--dual-tts', action='store_true',
+                       help='Generate podcasts using both OpenAI and ElevenLabs TTS')
     parser.add_argument('--voices', nargs=2, metavar=('FEMALE', 'MALE'),
                        help='Voice IDs for female host and male guest')
     parser.add_argument('--output', '-o', help='Output MP3 file path (default: auto-generated)')
     parser.add_argument('--summary-length', choices=['short', 'medium', 'long'], 
-                       default='short', help='Summary length (default: short)')
+                       default='short', help='Analysis length (default: short)')
     parser.add_argument('--target-words', type=int, default=900, 
                        help='Target word count for dialogue (default: 900)')
     parser.add_argument('--max-chars', type=int, 
@@ -172,11 +293,22 @@ Examples:
                 language_code, confidence, lang_metadata = detect_language(text)
                 logger.info(f"Detected language: {language_code} (confidence: {confidence:.3f})")
         
-        # Step 3: Summarize text
-        with PipelineTimer("Text summarization", logger):
-            summary_config = SummaryConfig(target_length=args.summary_length)
+        # Step 3: Analyze text (previously called summarize)
+        with PipelineTimer("Text analysis", logger):
+            summary_config = SummarizerConfig(target_length=args.summary_length)
             summary = llm_summary(text, target_len=args.summary_length)
-            logger.info(f"Generated summary: {len(summary)} characters")
+            logger.info(f"Generated analysis: {len(summary)} characters")
+        
+        # Save analysis to file
+        summary_path = output_path.parent / f"{pdf_path.stem}_analysis.txt"
+        with open(summary_path, 'w', encoding='utf-8') as f:
+            f.write(f"# Analysis of {pdf_path.name}\n\n")
+            f.write(f"Language: {language_code} (confidence: {confidence:.3f})\n")
+            f.write(f"Original text: {len(text)} characters\n")
+            f.write(f"Analysis: {len(summary)} characters\n")
+            f.write(f"Compression ratio: {len(text)/len(summary):.1f}x\n\n")
+            f.write(summary)
+        logger.info(f"Analysis saved to: {summary_path}")
         
         # Step 4: Generate dialogue script
         with PipelineTimer("Script generation", logger):
@@ -188,86 +320,139 @@ Examples:
             dialogue_lines = script_generator.generate_dialogue(summary, script_config)
             logger.info(f"Generated script with {len(dialogue_lines)} dialogue lines")
         
-        # Step 5: Choose TTS backend
-        if args.tts == 'auto':
+        # Save script to file
+        script_path = output_path.parent / f"{pdf_path.stem}_script.txt"
+        with open(script_path, 'w', encoding='utf-8') as f:
+            f.write(f"# Podcast Script - {pdf_path.name}\n\n")
+            f.write(f"Language: {language_code}\n")
+            f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"Total lines: {len(dialogue_lines)}\n")
+            f.write("="*50 + "\n\n")
+            
+            for i, line in enumerate(dialogue_lines):
+                f.write(f"[{i+1:02d}] {line.speaker.value}: {line.text}\n")
+                f.write("\n")
+        logger.info(f"Script saved to: {script_path}")
+        
+        # Step 5: Choose TTS backend(s)
+        if args.dual_tts:
+            # Check if both OpenAI and ElevenLabs are available
             available_backends = get_available_tts_backends()
-            if not available_backends:
-                logger.error("No TTS backends available. Check your API keys.")
+            if 'openai' not in available_backends:
+                logger.error("OpenAI TTS not available. Check OPENAI_API_KEY environment variable.")
+                sys.exit(1)
+            if 'eleven' not in available_backends:
+                logger.error("ElevenLabs TTS not available. Check ELEVENLABS_API_KEY environment variable.")
                 sys.exit(1)
             
-            # Prefer ElevenLabs for quality, fall back to others
-            tts_backend_name = available_backends[0] if 'eleven' in available_backends else available_backends[0]
+            tts_backends = ['openai', 'eleven']
+            logger.info("Dual TTS mode: Will generate podcasts using both OpenAI and ElevenLabs")
         else:
-            tts_backend_name = args.tts
-        
-        logger.info(f"Using TTS backend: {tts_backend_name}")
-        
-        # Step 6: Setup TTS configuration
-        tts_config = TTSConfig(language=language_code)
-        if args.voices:
-            tts_config.female_voice = args.voices[0]
-            tts_config.male_voice = args.voices[1]
-        
-        tts_backend = create_tts_backend(tts_backend_name, language_code, tts_config)
-        
-        # Step 7: Synthesize audio for each dialogue line
-        audio_segments = []
-        total_cost = 0.0
-        
-        with PipelineTimer("Audio synthesis", logger):
-            for i, line in enumerate(dialogue_lines):
-                logger.debug(f"Synthesizing line {i+1}/{len(dialogue_lines)}: {line.speaker.value}")
+            if args.tts == 'auto':
+                available_backends = get_available_tts_backends()
+                if not available_backends:
+                    logger.error("No TTS backends available. Check your API keys.")
+                    sys.exit(1)
                 
-                # Determine voice based on speaker
-                voice_id = tts_config.female_voice if line.speaker.value == "HOST" else tts_config.male_voice
-                
-                # Synthesize the line
-                result = tts_backend.synthesize(line.text, voice_id)
-                
-                # Create audio segment info
-                segment_info = AudioSegmentInfo(
-                    audio_data=result.audio_data,
-                    duration_seconds=result.duration_seconds,
-                    speaker=line.speaker.value.lower(),
-                    text=line.text,
-                    pause_before=line.pause_before,
-                    pause_after=line.pause_after
-                )
-                
-                audio_segments.append(segment_info)
-                total_cost += result.cost_estimate
-                
-                logger.debug(f"Synthesized {result.duration_seconds:.1f}s audio")
-        
-        logger.info(f"Synthesized {len(audio_segments)} audio segments, estimated cost: ${total_cost:.3f}")
-        
-        # Step 8: Mix final audio
-        with PipelineTimer("Audio mixing", logger):
-            mixer_config = MixingConfig()
-            mixer = AudioMixer(mixer_config)
+                # Prefer ElevenLabs for quality, fall back to OpenAI, then others
+                if 'eleven' in available_backends:
+                    tts_backend_name = 'eleven'
+                elif 'openai' in available_backends:
+                    tts_backend_name = 'openai'
+                    logger.info("ElevenLabs not available, using OpenAI TTS as fallback")
+                else:
+                    tts_backend_name = available_backends[0]
+                    logger.info(f"Using {tts_backend_name} TTS as fallback")
+            else:
+                tts_backend_name = args.tts
             
-            mix_result = mixer.mix_segments(audio_segments, output_path)
-            logger.info(f"Final podcast created: {output_path}")
-            logger.info(f"Duration: {mix_result['duration_seconds']:.1f}s, Size: {mix_result['file_size_bytes']/1024/1024:.1f}MB")
+            tts_backends = [tts_backend_name]
+            logger.info(f"Using TTS backend: {tts_backend_name}")
+        
+        # Step 6: Process TTS synthesis for each backend
+        synthesis_results = []
+        all_output_files = []
+        total_cost_all = 0.0
+        
+        for backend in tts_backends:
+            logger.info(f"Processing TTS synthesis with {backend}")
+            synthesis_result = process_tts_synthesis(backend, dialogue_lines, language_code, args.voices, output_path, logger)
+            synthesis_results.append(synthesis_result)
+            all_output_files.append(synthesis_result['output_path'])
+            total_cost_all += synthesis_result['total_cost']
         
         # Log final pipeline metrics
         final_metrics = {
             'input_file': str(pdf_path),
-            'output_file': str(output_path),
+            'output_files': [str(file) for file in all_output_files],
             'language': language_code,
             'language_confidence': confidence,
-            'tts_backend': tts_backend_name,
+            'tts_backends': tts_backends,
             'text_chars': len(text),
-            'summary_chars': len(summary),
+            'analysis_chars': len(summary),
+            'analysis_words': len(summary.split()),
             'script_lines': len(dialogue_lines),
-            'audio_segments': len(audio_segments),
-            'final_duration_seconds': mix_result['duration_seconds'],
-            'final_file_size_bytes': mix_result['file_size_bytes'],
-            'estimated_cost': total_cost
+            'audio_segments': sum(len(result['audio_segments']) for result in synthesis_results),
+            'final_duration_seconds': max(result['mix_result']['duration_seconds'] for result in synthesis_results),
+            'final_file_size_bytes': max(result['mix_result']['file_size_bytes'] for result in synthesis_results),
+            'estimated_cost': total_cost_all
         }
         log_pipeline_metrics("pipeline_complete", final_metrics, logger)
         
+        # Save comprehensive metadata file
+        metadata_path = all_output_files[0].parent / f"{all_output_files[0].stem}_metadata.json"
+        metadata = {
+            'processing_info': {
+                'timestamp': datetime.now().isoformat(),
+                'pipeline_version': '1.0',
+                'input_file': str(pdf_path),
+                'input_file_size': pdf_path.stat().st_size
+            },
+            'content_analysis': {
+                'language': language_code,
+                'language_confidence': confidence,
+                'original_text_chars': len(text),
+                'original_text_words': len(text.split()),
+                'analysis_chars': len(summary),
+                'analysis_words': len(summary.split()),
+                'compression_ratio': len(text) / len(summary)
+            },
+            'script_generation': {
+                'target_words': args.target_words,
+                'actual_words': sum(len(line.text.split()) for line in dialogue_lines),
+                'dialogue_lines': len(dialogue_lines),
+                'host_lines': len([l for l in dialogue_lines if l.speaker.value == 'HOST']),
+                'guest_lines': len([l for l in dialogue_lines if l.speaker.value == 'GUEST']),
+            },
+            'tts_synthesis': {
+                'backends_used': tts_backends,
+                'voices_used': [result['voices'] for result in synthesis_results],
+                'total_characters': sum(len(line.text) for line in dialogue_lines),
+                'estimated_cost': total_cost_all
+            },
+            'output_files': {
+                'podcasts': [str(file) for file in all_output_files],
+                'analysis': str(summary_path),
+                'script': str(script_path),
+                'metadata': str(metadata_path),
+                'duration_seconds': max(result['mix_result']['duration_seconds'] for result in synthesis_results),
+                'file_size_bytes': max(result['mix_result']['file_size_bytes'] for result in synthesis_results)
+            }
+        }
+        
+        with open(metadata_path, 'w', encoding='utf-8') as f:
+            json.dump(metadata, f, indent=2, ensure_ascii=False)
+        logger.info(f"Metadata saved to: {metadata_path}")
+        
         logger.info("TTS Podcast Pipeline completed successfully!")
+        
+        # Print analysis of all generated files
+        logger.info("📁 Generated files:")
+        logger.info(f"  📄 Analysis: {summary_path}")
+        logger.info(f"  📝 Script: {script_path}")
+        for file in all_output_files:
+            logger.info(f"  🎧 Podcast: {file}")
+        logger.info(f"  📊 Metadata: {metadata_path}")
         
         return 0
         

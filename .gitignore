@@ -26,12 +26,15 @@ wheels/
 env/
 venv/
 ENV/
+env.bak/
+venv.bak/
 
 # IDE
 .idea/
 .vscode/
 *.swp
 *.swo
+*~
 
 # Project specific
 output/
@@ -40,10 +43,58 @@ output/
 *.pdf
 src/tts/voices/
 logs/
+*.log
 
-# Misc
+# Credentials and sensitive files
+*.json
+!requirements*.json
+!package*.json
+credentials/
+.credentials/
+service-account*.json
+genuine-segment-*.json
+
+# OS specific
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+*.tmp
+*.temp
+
+# Testing
 .coverage
 coverage.xml
-*.log
-.pytest_cache/ 
+.pytest_cache/
+.tox/
+.coverage.*
+htmlcov/
+
+# Documentation builds
+docs/_build/
+site/
+
+# Temporary files
+temp/
+tmp/
+.temp/
+.tmp/
+
+# Input data (unless specifically needed)
+pdf_folder/
+input/
+data/
+
+# Jupyter notebooks checkpoints
+.ipynb_checkpoints
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/

@@ -3,15 +3,16 @@ OpenAI TTS backend for TTS Podcast Pipeline
 """
 import logging
 import os
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import tempfile
 from pathlib import Path
+import re
 
 import openai
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from .base import BaseTTSBackend, TTSConfig, SynthesisResult, AudioFormat
-from ..utils.log_cfg import PipelineTimer
+from utils.log_cfg import PipelineTimer
 
 logger = logging.getLogger(__name__)
 
@@ -41,37 +42,48 @@ class OpenAITTSBackend(BaseTTSBackend):
             raise ValueError("OpenAI API key not found. Set OPENAI_API_KEY environment variable.")
         
         self.client = openai.OpenAI(api_key=api_key)
-        
-        # Set default voices if not specified
-        if not config.female_voice:
-            config.female_voice = 'shimmer'  # Default female voice
-        if not config.male_voice:
-            config.male_voice = 'onyx'      # Default male voice
-            
         self.config = config
         
-        logger.info(f"Initialized OpenAI TTS backend with voices: {config.female_voice}, {config.male_voice}")
+        logger.info(f"Initialized OpenAI TTS backend with voice: {config.voice_id}")
     
-    def get_available_voices(self, language: Optional[str] = None) -> Dict[str, Any]:
+    def clean_text_for_synthesis(self, text: str) -> str:
+        """Clean text for better TTS synthesis"""
+        if not text:
+            return ""
+        
+        # Remove excessive whitespace
+        text = re.sub(r'\s+', ' ', text)
+        
+        # Remove common problematic characters
+        text = re.sub(r'[^\w\s.,;:!?\'"-]', '', text)
+        
+        # Ensure proper sentence endings
+        text = text.strip()
+        if text and not text.endswith(('.', '!', '?')):
+            text += '.'
+        
+        return text
+    
+    def get_available_voices(self, language: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get available voices for the language"""
         
         # OpenAI TTS voices work with all supported languages
-        return {
-            voice_id: {
+        voices = []
+        for voice_id, info in self.VOICE_MAPPINGS.items():
+            voices.append({
                 'id': voice_id,
                 'name': voice_id.title(),
                 'gender': info['gender'],
                 'description': info['description'],
                 'language_support': 'multilingual'
-            }
-            for voice_id, info in self.VOICE_MAPPINGS.items()
-        }
+            })
+        return voices
     
     def validate_voice(self, voice_id: str, language: Optional[str] = None) -> bool:
         """Validate if voice exists and supports the language"""
         return voice_id in self.VOICE_MAPPINGS
     
-    def estimate_cost(self, text: str, voice_id: str) -> float:
+    def estimate_cost(self, text: str, config: TTSConfig) -> float:
         """Estimate synthesis cost"""
         char_count = len(text)
         return (char_count / 1000) * self.COST_PER_1K_CHARS
@@ -107,14 +119,26 @@ class OpenAITTSBackend(BaseTTSBackend):
             logger.error(f"OpenAI TTS API error: {e}")
             raise
     
-    def synthesize(self, text: str, voice_id: str, **kwargs) -> SynthesisResult:
+    def get_max_text_length(self) -> int:
+        """OpenAI TTS supports up to 4096 characters per request"""
+        return 4096
+
+    def supports_ssml(self) -> bool:
+        """OpenAI TTS does not support SSML"""
+        return False
+    
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        retry=retry_if_exception_type((openai.RateLimitError, openai.APITimeoutError, openai.InternalServerError))
+    )
+    def synthesize(self, text: str, config: TTSConfig) -> SynthesisResult:
         """
         Synthesize speech using OpenAI TTS
         
         Args:
             text: Text to synthesize
-            voice_id: Voice ID to use
-            **kwargs: Additional parameters
+            config: TTSConfig with voice_id and other settings
             
         Returns:
             SynthesisResult with audio data and metadata
@@ -122,19 +146,16 @@ class OpenAITTSBackend(BaseTTSBackend):
         if not text or not text.strip():
             raise ValueError("Text cannot be empty")
         
+        voice_id = config.voice_id
         if not self.validate_voice(voice_id):
             raise ValueError(f"Invalid voice ID: {voice_id}")
         
-        # Clean and prepare text
-        clean_text = self.clean_text_for_synthesis(text)
-        
-        # Validate text length (OpenAI has a 4096 character limit)
-        if len(clean_text) > 4000:
-            logger.warning(f"Text length {len(clean_text)} exceeds recommended limit, truncating")
-            clean_text = clean_text[:4000] + "..."
-        
-        with PipelineTimer(f"OpenAI TTS synthesis ({len(clean_text)} chars)", logger):
+        with PipelineTimer(f"OpenAI TTS synthesis ({len(text)} chars)", logger):
+            # Clean and prepare text
+            clean_text = self.clean_text_for_synthesis(text)
+            
             try:
+                logger.info(f"Synthesizing with OpenAI TTS: voice={config.voice_id}, chars={len(clean_text)}")
                 # Synthesize audio
                 audio_format = "mp3"  # OpenAI supports mp3, opus, aac, flac
                 audio_data = self._synthesize_with_retry(clean_text, voice_id, audio_format)
@@ -146,21 +167,21 @@ class OpenAITTSBackend(BaseTTSBackend):
                 estimated_duration = len(clean_text) / 150.0
                 
                 # Calculate cost
-                cost = self.estimate_cost(clean_text, voice_id)
+                cost = self.estimate_cost(clean_text, config)
                 
                 result = SynthesisResult(
                     audio_data=audio_data,
                     format=AudioFormat.MP3,
-                    sample_rate=24000,  # OpenAI TTS default sample rate
                     duration_seconds=estimated_duration,
-                    voice_id=voice_id,
-                    text=clean_text,
+                    sample_rate=24000,  # OpenAI TTS default sample rate
+                    character_count=len(clean_text),
                     cost_estimate=cost,
                     metadata={
                         'backend': 'openai',
                         'model': 'tts-1',
+                        'voice_id': voice_id,
                         'voice_gender': self.VOICE_MAPPINGS[voice_id]['gender'],
-                        'characters_processed': len(clean_text)
+                        'text': clean_text
                     }
                 )
                 
@@ -207,4 +228,36 @@ class OpenAITTSBackend(BaseTTSBackend):
                 'backend': 'openai',
                 'error': str(e),
                 'api_accessible': False
+            }
+    
+    def get_voice_info(self, voice_id: str) -> Dict[str, Any]:
+        """Get detailed information about a specific voice"""
+        if voice_id not in self.VOICE_MAPPINGS:
+            raise ValueError(f"Voice not found: {voice_id}")
+        
+        voice_info = self.VOICE_MAPPINGS[voice_id]
+        return {
+            'id': voice_id,
+            'name': voice_id.title(),
+            'gender': voice_info['gender'],
+            'description': voice_info['description'],
+            'language_support': 'multilingual',
+            'backend': 'openai',
+            'model': 'tts-1'
+        }
+    
+    def get_service_limits(self) -> Dict[str, Any]:
+        """Get service limits and quotas"""
+        return {
+            'max_text_length': 4096,
+            'supported_formats': ['mp3', 'opus', 'aac', 'flac'],
+            'sample_rate': 24000,
+            'rate_limits': {
+                'requests_per_minute': 50,  # Typical OpenAI rate limit
+                'characters_per_minute': 500000
+            },
+            'cost_per_1k_chars': self.COST_PER_1K_CHARS,
+            'supported_languages': [
+                'en', 'es', 'fr', 'de', 'it', 'pt', 'ru', 'ja', 'ko', 'zh', 'ar', 'hi', 'tr', 'pl', 'nl'
+            ]
             } 

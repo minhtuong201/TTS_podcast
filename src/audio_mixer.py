@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass
 import tempfile
+from math import log10
+import io
 
 from pydub import AudioSegment
 from pydub.effects import normalize, compress_dynamic_range
@@ -20,10 +22,8 @@ class AudioSegmentInfo:
     """Information about an audio segment"""
     audio_data: bytes
     duration_seconds: float
-    speaker: str  # 'host' or 'guest'
+    speaker: str  # 'host', 'guest', 'male', 'female', etc.
     text: str
-    pause_before: float = 0.0
-    pause_after: float = 0.0
 
 
 @dataclass
@@ -36,6 +36,11 @@ class MixingConfig:
     normalize_audio: bool = True
     intro_silence: float = 0.5
     outro_silence: float = 1.0
+    speaker_volumes: Dict[str, float] = None  # Speaker-specific volume multipliers (e.g., {"male": 1.1, "female": 1.0})
+    
+    def __post_init__(self):
+        if self.speaker_volumes is None:
+            self.speaker_volumes = {}
 
 
 class AudioMixer:
@@ -63,35 +68,32 @@ class AudioMixer:
                     
                     logger.info(f"Processing {len(segments)} audio segments")
                     
+                    # Combine all audio segments
+                    combined_audio = AudioSegment.empty()
+                    
                     for i, segment_info in enumerate(segments):
-                        # Load audio from bytes
-                        audio_segment = self._load_audio_from_bytes(
-                            segment_info.audio_data, 
-                            temp_path / f"segment_{i}.mp3"
+                        logger.debug(f"Processing segment {i+1}: {segment_info.speaker} - {len(segment_info.text)} chars")
+                        
+                        # Load and process the audio segment
+                        segment_audio = AudioSegment.from_file(
+                            io.BytesIO(segment_info.audio_data),
+                            format="mp3"
                         )
                         
-                        # Add pauses
-                        if segment_info.pause_before > 0:
-                            silence_before = AudioSegment.silent(
-                                duration=int(segment_info.pause_before * 1000)
-                            )
-                            audio_segment = silence_before + audio_segment
+                        # Apply speaker-specific volume adjustments
+                        if segment_info.speaker in self.config.speaker_volumes:
+                            volume_multiplier = self.config.speaker_volumes[segment_info.speaker]
+                            if volume_multiplier != 1.0:
+                                # Convert to dB change
+                                db_change = 20 * log10(volume_multiplier)
+                                segment_audio = segment_audio + db_change
+                                logger.debug(f"Applied {volume_multiplier}x volume ({db_change:+.1f}dB) to {segment_info.speaker}")
                         
-                        if segment_info.pause_after > 0:
-                            silence_after = AudioSegment.silent(
-                                duration=int(segment_info.pause_after * 1000)
-                            )
-                            audio_segment = audio_segment + silence_after
+                        # Add the segment to combined audio
+                        combined_audio += segment_audio
                         
-                        audio_segments.append(audio_segment)
-                        total_duration += len(audio_segment) / 1000.0
+                        total_duration += len(segment_audio) / 1000.0
                         total_characters += len(segment_info.text)
-                    
-                    # Combine segments
-                    logger.info("Combining audio segments")
-                    combined_audio = AudioSegment.empty()
-                    for segment in audio_segments:
-                        combined_audio += segment
                     
                     # Add intro/outro silence
                     if self.config.intro_silence > 0:

@@ -23,13 +23,15 @@ logger = logging.getLogger(__name__)
 class ElevenLabsTTSBackend(BaseTTSBackend):
     """ElevenLabs TTS backend implementation"""
     
-    def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or os.getenv('ELEVENLABS_API_KEY')
+    def __init__(self, config: TTSConfig):
+        # Extract API key from environment or use default
+        self.api_key = os.getenv('ELEVENLABS_API_KEY')
         if not self.api_key:
             raise ValueError("ElevenLabs API key not found. Set ELEVENLABS_API_KEY environment variable.")
         
         super().__init__(api_key=self.api_key)
         
+        self.config = config
         self.base_url = "https://api.elevenlabs.io/v1"
         self.headers = {
             "Accept": "audio/mpeg",
@@ -43,12 +45,8 @@ class ElevenLabsTTSBackend(BaseTTSBackend):
         self._cache_duration = 3600  # 1 hour
     
     def get_max_text_length(self) -> int:
-        """ElevenLabs limit is 5000 characters per request"""
+        """ElevenLabs supports up to 5000 characters per request"""
         return 5000
-    
-    def supports_emotion(self) -> bool:
-        """ElevenLabs supports style/emotion control"""
-        return True
     
     def supports_ssml(self) -> bool:
         """ElevenLabs supports basic SSML"""
@@ -119,24 +117,25 @@ class ElevenLabsTTSBackend(BaseTTSBackend):
             # Clean and prepare text
             clean_text = self.clean_text(text)
             
-            # Add pauses and emotion if supported
-            if config.pause_before > 0 or config.pause_after > 0:
-                clean_text = self.add_pauses_to_text(clean_text, config.pause_before, config.pause_after)
-            
-            if config.emotion:
-                clean_text = self.add_emotion_to_text(clean_text, config.emotion)
-            
             # Prepare request payload
             payload = {
                 "text": clean_text,
-                "model_id": "eleven_multilingual_v2",  # Best quality model
+                "model_id": "eleven_turbo_v2_5",  # Using Eleven Turbo v2.5 as specified
                 "voice_settings": {
-                    "stability": config.stability,
-                    "similarity_boost": config.similarity_boost,
-                    "style": config.style,
-                    "use_speaker_boost": True
+                    "stability": getattr(config, 'stability', 1.0),  # Use config value or default to 100%
+                    "similarity_boost": getattr(config, 'similarity_boost', 0.75),  # Use config value or default to 75%
+                    "style": getattr(config, 'style', 0.0),  # Use config value or default to 0%
+                    "use_speaker_boost": True  # Speaker boost enabled as specified
                 }
             }
+            
+            # Add speed parameter - use config value or default to 1.15
+            speed_value = getattr(config, 'speed', 1.15)  # Default to 1.15 to match male voice setting
+            # Clamp speed to valid ElevenLabs range
+            clamped_speed = max(0.7, min(1.2, speed_value))
+            if clamped_speed != speed_value:
+                logger.warning(f"Speed {speed_value} clamped to {clamped_speed} (ElevenLabs range: 0.7-1.2)")
+            payload["voice_settings"]["speed"] = clamped_speed
             
             try:
                 logger.info(f"Synthesizing with ElevenLabs: voice={config.voice_id}, chars={len(clean_text)}")
@@ -156,8 +155,8 @@ class ElevenLabsTTSBackend(BaseTTSBackend):
                 # Estimate duration (rough calculation: ~150 chars per minute)
                 estimated_duration = len(clean_text) / 150 * 60
                 
-                # Estimate cost (ElevenLabs pricing: ~$0.30 per 1K characters)
-                cost_estimate = len(clean_text) / 1000 * 0.30
+                # Estimate cost (ElevenLabs Flash v2.5 pricing: ~$0.15 per 1K characters - 50% cheaper)
+                cost_estimate = len(clean_text) / 1000 * 0.15
                 
                 result = SynthesisResult(
                     audio_data=audio_data,
@@ -168,7 +167,7 @@ class ElevenLabsTTSBackend(BaseTTSBackend):
                     cost_estimate=cost_estimate,
                     metadata={
                         "voice_id": config.voice_id,
-                        "model_id": "eleven_multilingual_v2",
+                        "model_id": "eleven_turbo_v2_5",
                         "voice_settings": payload["voice_settings"],
                         "backend": "elevenlabs"
                     }
@@ -181,9 +180,10 @@ class ElevenLabsTTSBackend(BaseTTSBackend):
                     'audio_size_bytes': len(audio_data),
                     'estimated_duration': estimated_duration,
                     'cost_estimate': cost_estimate,
-                    'stability': config.stability,
-                    'similarity_boost': config.similarity_boost,
-                    'style': config.style
+                    'stability': payload["voice_settings"]["stability"],
+                    'similarity_boost': payload["voice_settings"]["similarity_boost"],
+                    'style': payload["voice_settings"]["style"],
+                    'speed': payload["voice_settings"]["speed"]
                 }
                 log_pipeline_metrics("elevenlabs_synthesis", metrics, logger)
                 
@@ -329,43 +329,6 @@ class ElevenLabsTTSBackend(BaseTTSBackend):
             'max_voice_clones': 3,  # Varies by plan
             'api_version': 'v1'
         }
-    
-    def add_emotion_to_text(self, text: str, emotion: Optional[str]) -> str:
-        """
-        Add emotion/style hints for ElevenLabs
-        
-        Args:
-            text: Original text
-            emotion: Emotion to apply
-            
-        Returns:
-            Text with emotion hints
-        """
-        if not emotion:
-            return text
-        
-        # ElevenLabs responds well to contextual emotion hints
-        emotion_map = {
-            'happy': 'cheerful',
-            'excited': 'enthusiastic',
-            'sad': 'melancholy',
-            'angry': 'stern',
-            'surprised': 'amazed',
-            'thoughtful': 'contemplative',
-            'curious': 'inquisitive',
-            'amused': 'lighthearted',
-            'interested': 'engaged'
-        }
-        
-        emotion_hint = emotion_map.get(emotion.lower(), emotion)
-        
-        # Add subtle emotion hint (ElevenLabs picks up on context)
-        if emotion_hint in ['cheerful', 'enthusiastic', 'lighthearted']:
-            return f"{text}"  # Natural expression works better
-        elif emotion_hint in ['contemplative', 'thoughtful']:
-            return f"{text}"  # Let natural pauses handle this
-        else:
-            return text
     
     def _detect_gender(self, voice_name: str) -> str:
         """
