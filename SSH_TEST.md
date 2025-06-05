@@ -1,1 +1,0 @@
-SSH setup completed successfully!
