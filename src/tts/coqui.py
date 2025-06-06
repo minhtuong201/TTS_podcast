@@ -18,12 +18,12 @@ try:
 except ImportError:
     COQUI_AVAILABLE = False
 
-from .base import TTSBackend, TTSResult, TTSConfig
+from .base import BaseTTSBackend, TTSConfig, SynthesisResult, AudioFormat
 
 logger = logging.getLogger(__name__)
 
 
-class CoquiTTSBackend(TTSBackend):
+class CoquiTTSBackend(BaseTTSBackend):
     """Coqui-XTTS local TTS implementation"""
     
     # Available languages for XTTS v2
@@ -55,7 +55,8 @@ class CoquiTTSBackend(TTSBackend):
                 "For best performance, also install: pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu118"
             )
         
-        super().__init__(config)
+        super().__init__(api_key=None)
+        self.config = config
         
         # Check for GPU availability
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -114,7 +115,7 @@ class CoquiTTSBackend(TTSBackend):
         logger.warning(f"Voice sample not found for {voice_id}, using default synthesis")
         return None
     
-    def synthesize(self, text: str, config: TTSConfig) -> TTSResult:
+    def synthesize(self, text: str, config: TTSConfig) -> SynthesisResult:
         """
         Synthesize text using Coqui TTS
         
@@ -193,9 +194,9 @@ class CoquiTTSBackend(TTSBackend):
                     
                     logger.debug(f"Coqui synthesis successful: {duration_seconds:.1f}s, {character_count} chars")
                     
-                    return TTSResult(
+                    return SynthesisResult(
                         audio_data=audio_data,
-                        format="wav",
+                        format=AudioFormat.WAV,
                         duration_seconds=duration_seconds,
                         character_count=character_count,
                         cost_estimate=cost_estimate,
@@ -303,10 +304,4 @@ class CoquiTTSBackend(TTSBackend):
             return False
 
     def estimate_cost(self, text: str, config: TTSConfig) -> float:
-        # Implementation of estimate_cost method
-        # This method should return a cost estimate for the given text
-        # The implementation should be based on the logic of get_cost_estimate method
-        # and the logic of synthesize method
-        # This is a placeholder and should be implemented
-        return 0.0  # Placeholder return, actual implementation needed
-    
+        return 0.0
