@@ -78,6 +78,17 @@ def get_available_tts_backends() -> List[str]:
         except Exception as e:
             logger.warning(f"ElevenLabs connectivity test failed: {e}")
     
+    # Check Gemini TTS
+    if os.getenv('GEMINI_API_KEY'):
+        try:
+            import google.generativeai as genai
+            backends.append('gemini')
+            logger.info("Gemini TTS API key found: ✓")
+        except ImportError:
+            logger.warning("Gemini TTS: google-generativeai package not installed")
+        except Exception as e:
+            logger.warning(f"Gemini TTS check failed: {e}")
+    
     # Check OpenAI
     if os.getenv('OPENAI_API_KEY'):
         backends.append('openai')
@@ -106,6 +117,9 @@ def create_tts_backend(backend_name: str, language: str, config: TTSConfig):
     
     if backend_name == 'eleven':
         return ElevenLabsTTSBackend(config)
+    elif backend_name == 'gemini':
+        from tts.gemini import GeminiTTSBackend
+        return GeminiTTSBackend(config)
     elif backend_name == 'openai':
         from tts.openai import OpenAITTSBackend
         return OpenAITTSBackend(config)
@@ -133,6 +147,10 @@ def process_tts_synthesis(tts_backend_name: str, dialogue_lines, language_code, 
         if tts_backend_name == 'eleven':
             female_voice = "MF3mGyEYCl7XYWbV9V6O"  # Elli - Vietnamese female voice
             male_voice = "M0rVwr32hdQ5UXpkI3ni"    # The Hao - Vietnamese male voice
+        elif tts_backend_name == 'gemini':
+            # Use Vietnamese-optimized voices from Gemini
+            female_voice = "Fenrir"  # Excitable, energetic host
+            male_voice = "Leda"      # Youthful, engaged guest
         elif tts_backend_name == 'openai':
             female_voice = "shimmer"  # OpenAI female voice
             male_voice = "onyx"       # OpenAI male voice
@@ -149,65 +167,104 @@ def process_tts_synthesis(tts_backend_name: str, dialogue_lines, language_code, 
     dummy_config = TTSConfig(voice_id=female_voice)
     tts_backend = create_tts_backend(tts_backend_name, language_code, dummy_config)
     
-    # Synthesize audio for each dialogue line
-    audio_segments = []
-    total_cost = 0.0
-    
-    with PipelineTimer(f"{tts_backend_name.title()} audio synthesis", logger):
-        for i, line in enumerate(dialogue_lines):
-            logger.debug(f"Synthesizing line {i+1}/{len(dialogue_lines)}: {line.speaker.value} [{tts_backend_name}]")
+    # Handle Gemini TTS special multi-speaker capability
+    if tts_backend_name == 'gemini':
+        # Use Gemini's native multi-speaker synthesis
+        with PipelineTimer(f"{tts_backend_name.title()} multi-speaker synthesis", logger):
+            result = tts_backend.synthesize_multi_speaker(
+                dialogue_lines, 
+                host_voice=female_voice, 
+                guest_voice=male_voice
+            )
             
-            # Determine voice based on speaker
-            voice_id = female_voice if line.speaker.value == "HOST" else male_voice
-            
-            # Create TTS config for this line with voice-specific settings
-            if line.speaker.value == "HOST":
-                # Female voice settings (Elli)
-                tts_config = TTSConfig(
-                    voice_id=voice_id,
-                    speed=1.12,  # Female speed updated
-                    stability=0.5,  # 50% stability for female voice
-                    similarity_boost=0.75,  # 75% similarity boost
-                    style=0.0  # 0% style
-                )
-            else:
-                # Male voice settings (The Hao)
-                tts_config = TTSConfig(
-                    voice_id=voice_id,
-                    speed=1.15,  # Male speed updated
-                    stability=0.25,  # 25% stability for male voice
-                    similarity_boost=0.75,  # 75% similarity boost
-                    style=0.0  # 0% style
-                )
-            
-            # Synthesize the line
-            result = tts_backend.synthesize(line.text, tts_config)
-            
-            # Create audio segment info
+            # Create single audio segment for the entire conversation
             segment_info = AudioSegmentInfo(
                 audio_data=result.audio_data,
                 duration_seconds=result.duration_seconds,
-                speaker=line.speaker.value.lower(),
-                text=line.text
+                speaker="multi",  # Indicates multi-speaker audio
+                text="Multi-speaker dialogue"
             )
             
-            audio_segments.append(segment_info)
-            total_cost += result.cost_estimate
+            audio_segments = [segment_info]
+            total_cost = result.cost_estimate
             
-            logger.debug(f"Synthesized {result.duration_seconds:.1f}s audio [{tts_backend_name}]")
+            logger.info(f"Gemini multi-speaker synthesis completed: {result.duration_seconds:.1f}s audio")
+    else:
+        # Standard per-line synthesis for other backends
+        audio_segments = []
+        total_cost = 0.0
+        
+        with PipelineTimer(f"{tts_backend_name.title()} audio synthesis", logger):
+            for i, line in enumerate(dialogue_lines):
+                logger.debug(f"Synthesizing line {i+1}/{len(dialogue_lines)}: {line.speaker.value} [{tts_backend_name}]")
+                
+                # Determine voice based on speaker
+                voice_id = female_voice if line.speaker.value == "HOST" else male_voice
+                
+                # Create TTS config for this line with voice-specific settings
+                if line.speaker.value == "HOST":
+                    # Female voice settings (Elli)
+                    tts_config = TTSConfig(
+                        voice_id=voice_id,
+                        speed=1.12,  # Female speed updated
+                        stability=0.5,  # 50% stability for female voice
+                        similarity_boost=0.75,  # 75% similarity boost
+                        style=0.0  # 0% style
+                    )
+                else:
+                    # Male voice settings (The Hao)
+                    tts_config = TTSConfig(
+                        voice_id=voice_id,
+                        speed=1.15,  # Male speed updated
+                        stability=0.25,  # 25% stability for male voice
+                        similarity_boost=0.75,  # 75% similarity boost
+                        style=0.0  # 0% style
+                    )
+                
+                # Synthesize the line
+                result = tts_backend.synthesize(line.text, tts_config)
+                
+                # Create audio segment info
+                segment_info = AudioSegmentInfo(
+                    audio_data=result.audio_data,
+                    duration_seconds=result.duration_seconds,
+                    speaker=line.speaker.value.lower(),
+                    text=line.text
+                )
+                
+                audio_segments.append(segment_info)
+                total_cost += result.cost_estimate
+                
+                logger.debug(f"Synthesized {result.duration_seconds:.1f}s audio [{tts_backend_name}]")
     
     logger.info(f"{tts_backend_name.title()} synthesized {len(audio_segments)} audio segments, estimated cost: ${total_cost:.3f}")
     
     # Mix final audio
     output_path = output_base_path.parent / f"{output_base_path.stem}_{tts_backend_name}.mp3"
     
-    with PipelineTimer(f"{tts_backend_name.title()} audio mixing", logger):
-        mixer_config = MixingConfig()
-        mixer = AudioMixer(mixer_config)
-        
-        mix_result = mixer.mix_segments(audio_segments, output_path)
-        logger.info(f"{tts_backend_name.title()} podcast created: {output_path}")
-        logger.info(f"Duration: {mix_result['duration_seconds']:.1f}s, Size: {mix_result['file_size_bytes']/1024/1024:.1f}MB")
+    if tts_backend_name == 'gemini':
+        # For Gemini, we already have the complete audio, just save it
+        with PipelineTimer(f"{tts_backend_name.title()} audio saving", logger):
+            with open(output_path, 'wb') as f:
+                f.write(audio_segments[0].audio_data)
+            
+            # Create mix_result compatible with existing code
+            mix_result = {
+                'duration_seconds': audio_segments[0].duration_seconds,
+                'file_size_bytes': len(audio_segments[0].audio_data)
+            }
+            
+            logger.info(f"{tts_backend_name.title()} podcast created: {output_path}")
+            logger.info(f"Duration: {mix_result['duration_seconds']:.1f}s, Size: {mix_result['file_size_bytes']/1024/1024:.1f}MB")
+    else:
+        # Standard mixing for other backends
+        with PipelineTimer(f"{tts_backend_name.title()} audio mixing", logger):
+            mixer_config = MixingConfig()
+            mixer = AudioMixer(mixer_config)
+            
+            mix_result = mixer.mix_segments(audio_segments, output_path)
+            logger.info(f"{tts_backend_name.title()} podcast created: {output_path}")
+            logger.info(f"Duration: {mix_result['duration_seconds']:.1f}s, Size: {mix_result['file_size_bytes']/1024/1024:.1f}MB")
     
     return {
         'backend': tts_backend_name,
@@ -234,7 +291,7 @@ Examples:
     )
     
     parser.add_argument('pdf_path', help='Path to PDF file to process')
-    parser.add_argument('--tts', choices=['eleven', 'openai', 'google', 'azure', 'coqui', 'auto'], 
+    parser.add_argument('--tts', choices=['eleven', 'gemini', 'openai', 'google', 'azure', 'coqui', 'auto'], 
                        default='auto', help='TTS backend to use (default: auto-select with fallback)')
     parser.add_argument('--dual-tts', action='store_true',
                        help='Generate podcasts using both OpenAI and ElevenLabs TTS')
@@ -354,12 +411,15 @@ Examples:
                     logger.error("No TTS backends available. Check your API keys.")
                     sys.exit(1)
                 
-                # Prefer ElevenLabs for quality, fall back to OpenAI, then others
+                # Prefer ElevenLabs for quality, then Gemini, fall back to OpenAI, then others
                 if 'eleven' in available_backends:
                     tts_backend_name = 'eleven'
+                elif 'gemini' in available_backends:
+                    tts_backend_name = 'gemini'
+                    logger.info("ElevenLabs not available, using Gemini TTS as fallback")
                 elif 'openai' in available_backends:
                     tts_backend_name = 'openai'
-                    logger.info("ElevenLabs not available, using OpenAI TTS as fallback")
+                    logger.info("ElevenLabs and Gemini not available, using OpenAI TTS as fallback")
                 else:
                     tts_backend_name = available_backends[0]
                     logger.info(f"Using {tts_backend_name} TTS as fallback")

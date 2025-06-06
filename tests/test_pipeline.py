@@ -156,6 +156,68 @@ class TestElevenLabs:
         assert male_backend is not None
 
 
+class TestGeminiTTS:
+    """Test Gemini TTS functionality"""
+    
+    @pytest.mark.skipif(not os.getenv('GEMINI_API_KEY'), reason="GEMINI_API_KEY not set")
+    def test_gemini_backend_creation(self):
+        """Test Gemini TTS backend creation"""
+        try:
+            from tts.gemini import GeminiTTSBackend
+            from tts.base import TTSConfig
+            
+            config = TTSConfig(voice_id="Fenrir")  # Vietnamese-optimized voice
+            backend = GeminiTTSBackend(config)
+            assert backend is not None
+        except ImportError:
+            pytest.skip("Gemini TTS dependencies not installed")
+    
+    @pytest.mark.skipif(not os.getenv('GEMINI_API_KEY'), reason="GEMINI_API_KEY not set")
+    def test_voice_profiles_loading(self):
+        """Test loading Vietnamese voice profiles"""
+        try:
+            from tts.gemini import GeminiTTSBackend
+            from tts.base import TTSConfig
+            
+            config = TTSConfig(voice_id="Fenrir")
+            backend = GeminiTTSBackend(config)
+            
+            # Test getting default voices
+            default_voices = backend.get_default_voices()
+            assert 'host' in default_voices
+            assert 'guest' in default_voices
+            assert default_voices['host'] == 'Fenrir'
+            assert default_voices['guest'] == 'Leda'
+            
+        except ImportError:
+            pytest.skip("Gemini TTS dependencies not installed")
+    
+    @pytest.mark.skipif(not os.getenv('GEMINI_API_KEY'), reason="GEMINI_API_KEY not set")
+    def test_available_voices(self):
+        """Test getting available voices with Vietnamese filtering"""
+        try:
+            from tts.gemini import GeminiTTSBackend
+            from tts.base import TTSConfig
+            
+            config = TTSConfig(voice_id="Fenrir")
+            backend = GeminiTTSBackend(config)
+            
+            # Test getting all voices
+            all_voices = backend.get_available_voices()
+            assert len(all_voices) > 0
+            
+            # Test Vietnamese filtering
+            vi_voices = backend.get_available_voices(language='vietnamese')
+            assert len(vi_voices) > 0
+            
+            # Check that all Vietnamese voices have excellent/good suitability
+            for voice in vi_voices:
+                assert voice['vietnamese_suitability'] in ['excellent', 'good']
+                
+        except ImportError:
+            pytest.skip("Gemini TTS dependencies not installed")
+
+
 class TestGoogleCloudTTS:
     """Test Google Cloud TTS functionality"""
     

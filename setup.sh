@@ -84,6 +84,9 @@ OPENROUTER_API_KEY=your_openrouter_api_key_here
 # ElevenLabs (recommended for best quality)
 ELEVENLABS_API_KEY=your_elevenlabs_api_key_here
 
+# Gemini TTS (premium multi-speaker)
+GEMINI_API_KEY=your_gemini_api_key_here
+
 # OpenAI TTS (alternative)
 OPENAI_API_KEY=your_openai_api_key_here
 
@@ -145,6 +148,7 @@ echo ""
 echo "📚 API Key Resources:"
 echo "• OpenRouter (required): https://openrouter.ai"
 echo "• ElevenLabs (recommended): https://elevenlabs.io"
+echo "• Gemini TTS (premium multi-speaker): https://ai.google.dev/"
 echo "• OpenAI: https://platform.openai.com"
 echo "• Azure Speech: https://azure.microsoft.com/cognitive-services/speech-services/"
 echo ""
