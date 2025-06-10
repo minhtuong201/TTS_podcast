@@ -5,7 +5,10 @@ import logging
 import os
 import json
 import time
-from typing import Optional, Dict, Any, List
+import io
+import struct
+import mimetypes
+from typing import Optional, Dict, Any, List, Tuple
 from pathlib import Path
 
 from google import genai
@@ -75,71 +78,104 @@ class GeminiTTSBackend(BaseTTSBackend):
         """Get default Vietnamese-optimized voices"""
         defaults = self.voices_data.get("default_voices", {}).get("vietnamese_podcast", {})
         return {
-            "host": defaults.get("host", "Fenrir"),
-            "guest": defaults.get("guest", "Leda")
+            "host": defaults.get("host", "Zephyr"),
+            "guest": defaults.get("guest", "Rasalgethi")
         }
     
-    def _create_multi_speaker_prompt(self, dialogue_lines, host_voice: str, guest_voice: str) -> str:
-        """Create multi-speaker prompt for Gemini TTS"""
+    def _create_multi_speaker_dialogue(self, dialogue_lines) -> str:
+        """Create clean dialogue text for multi-speaker API"""
         
-        # Get style instructions
-        style_prompt = self.voices_data.get("style_prompts", {}).get("vietnamese_podcast", "")
-        
-        # Build the dialogue text
+        # Build the dialogue text with proper speaker labels for API
         dialogue_text = ""
         for line in dialogue_lines:
-            speaker_name = "Host" if line.speaker.value == "HOST" else "Guest"
-            dialogue_text += f"{speaker_name}: {line.text}\n\n"
+            # Use exact speaker labels that match the API configuration
+            speaker_label = line.speaker.value  # This should be "HOST" or "GUEST"
+            dialogue_text += f"{speaker_label}: {line.text}\n\n"
         
-        # Create the full prompt with voice assignments and style
-        full_prompt = f"""
-{style_prompt}
-
-Voice assignments:
-- Host: Use voice '{host_voice}' (energetic, enthusiastic)
-- Guest: Use voice '{guest_voice}' (youthful, engaged)
-
-Generate this dialogue as a natural Vietnamese podcast conversation:
-
-{dialogue_text}
-
-Make sure both speakers sound natural, engaged, and maintain the conversational flow with appropriate emotions and pacing.
-"""
-        
-        return full_prompt
+        return dialogue_text.strip()
     
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=4, max=10),
         retry=retry_if_exception_type((Exception,))
     )
-    def _generate_audio_with_retry(self, prompt: str, host_voice: str, guest_voice: str) -> bytes:
-        """Generate audio with retry logic"""
+    def _generate_audio_with_retry(self, dialogue_text: str, host_voice: str, guest_voice: str, 
+                                  style_prompt: str = None, temperature: float = 1.5) -> Tuple[bytes, str]:
+        """Generate audio with retry logic using proper multi-speaker API
+        
+        Returns:
+            Tuple of (audio_data, mime_type)
+        """
         
         try:
-            # Configure speech generation using the new API syntax
+            # Create content with style prompt + dialogue text
+            if style_prompt:
+                full_text = f"{style_prompt}\n\n{dialogue_text}"
+            else:
+                full_text = dialogue_text
+                
+            contents = [
+                types.Content(
+                    role="user",
+                    parts=[
+                        types.Part.from_text(text=full_text)
+                    ]
+                )
+            ]
+            
+            # Configure speech generation using proper multi-speaker API
             response = self.client.models.generate_content(
                 model=self.model_name,
-                contents=prompt,
+                contents=contents,
                 config=types.GenerateContentConfig(
+                    temperature=temperature,  # Natural variation for engaging audio
                     response_modalities=["AUDIO"],
                     speech_config=types.SpeechConfig(
-                        voice_config=types.VoiceConfig(
-                            prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                                voice_name=host_voice,
-                            )
+                        multi_speaker_voice_config=types.MultiSpeakerVoiceConfig(
+                            speaker_voice_configs=[
+                                types.SpeakerVoiceConfig(
+                                    speaker="HOST",
+                                    voice_config=types.VoiceConfig(
+                                        prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                                            voice_name=host_voice
+                                        )
+                                    )
+                                ),
+                                types.SpeakerVoiceConfig(
+                                    speaker="GUEST",
+                                    voice_config=types.VoiceConfig(
+                                        prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                                            voice_name=guest_voice
+                                        )
+                                    )
+                                )
+                            ]
                         )
                     ),
                 )
             )
             
-            # Extract audio data from response
-            if hasattr(response, 'candidates') and response.candidates:
-                candidate = response.candidates[0]
-                if hasattr(candidate, 'content') and candidate.content.parts:
-                    for part in candidate.content.parts:
-                        if hasattr(part, 'inline_data') and part.inline_data:
-                            return part.inline_data.data
+            # Extract audio data and format from response (following Google AI Studio pattern)
+            if (
+                response.candidates is None
+                or response.candidates[0].content is None
+                or response.candidates[0].content.parts is None
+            ):
+                raise TTSError("No audio data found in Gemini response")
+            
+            candidate = response.candidates[0]
+            for part in candidate.content.parts:
+                if part.inline_data and part.inline_data.data:
+                    audio_data = part.inline_data.data
+                    mime_type = part.inline_data.mime_type
+                    
+                    # Validate audio data
+                    if not audio_data or len(audio_data) < 100:  # Basic sanity check
+                        logger.warning(f"Received suspiciously small audio data: {len(audio_data) if audio_data else 0} bytes")
+                    
+                    logger.debug(f"Gemini TTS returned audio: {len(audio_data)} bytes, MIME type: {mime_type}")
+                    
+                    return audio_data, mime_type
             
             raise TTSError("No audio data found in Gemini response")
             
@@ -152,7 +188,8 @@ Make sure both speakers sound natural, engaged, and maintain the conversational 
                 logger.warning(f"Gemini TTS API error: {e}, will retry...")
                 raise
     
-    def synthesize_multi_speaker(self, dialogue_lines, host_voice: str = None, guest_voice: str = None) -> SynthesisResult:
+    def synthesize_multi_speaker(self, dialogue_lines, host_voice: str = None, guest_voice: str = None,
+                                style_prompt: str = None, temperature: float = 1.5) -> SynthesisResult:
         """
         Synthesize multi-speaker dialogue using Gemini TTS
         
@@ -160,6 +197,8 @@ Make sure both speakers sound natural, engaged, and maintain the conversational 
             dialogue_lines: List of dialogue lines with speaker and text
             host_voice: Voice for host speaker
             guest_voice: Voice for guest speaker
+            style_prompt: Global style instructions for both speakers
+            temperature: Temperature for generation (0.0-2.0, higher = more variation)
             
         Returns:
             SynthesisResult with audio data and metadata
@@ -177,17 +216,39 @@ Make sure both speakers sound natural, engaged, and maintain the conversational 
         
         with PipelineTimer(f"Gemini multi-speaker synthesis ({len(total_text)} chars)", logger):
             
-            # Create multi-speaker prompt
-            prompt = self._create_multi_speaker_prompt(dialogue_lines, host_voice, guest_voice)
+            # Create clean dialogue text for multi-speaker API
+            dialogue_text = self._create_multi_speaker_dialogue(dialogue_lines)
             
             try:
                 logger.info(f"Synthesizing with Gemini TTS: host={host_voice}, guest={guest_voice}, lines={len(dialogue_lines)}")
+                if style_prompt:
+                    logger.info(f"Using style prompt: {style_prompt[:100]}...")
                 
-                # Generate audio
-                audio_data = self._generate_audio_with_retry(prompt, host_voice, guest_voice)
+                # Generate audio using proper multi-speaker API
+                audio_data, mime_type = self._generate_audio_with_retry(
+                    dialogue_text, host_voice, guest_voice, style_prompt, temperature
+                )
                 
                 if not audio_data:
                     raise TTSError("Received empty audio data from Gemini TTS")
+                
+                # Determine audio format and handle conversion (Google AI Studio approach)
+                file_extension = mimetypes.guess_extension(mime_type)
+                if file_extension is None:
+                    file_extension = ".wav"
+                    # Convert to WAV first using Google AI Studio method
+                    audio_data = self._convert_to_wav(audio_data, mime_type)
+                    audio_format = AudioFormat.WAV
+                    logger.info(f"Converted audio from {mime_type} to WAV format")
+                else:
+                    audio_format = self._detect_audio_format(mime_type)
+                    logger.info(f"Gemini TTS returned {audio_format.value} format (MIME: {mime_type})")
+                
+                # Convert to MP3 if not already MP3
+                if audio_format != AudioFormat.MP3:
+                    audio_data = self._convert_audio_to_mp3(audio_data, audio_format, mime_type)
+                    audio_format = AudioFormat.MP3
+                    logger.info(f"Converted audio to MP3 format")
                 
                 # Estimate duration (rough calculation: ~150 chars per minute)
                 estimated_duration = len(total_text) / 150 * 60
@@ -198,7 +259,7 @@ Make sure both speakers sound natural, engaged, and maintain the conversational 
                 
                 result = SynthesisResult(
                     audio_data=audio_data,
-                    format=AudioFormat.MP3,  # Assuming MP3 format
+                    format=audio_format,
                     duration_seconds=estimated_duration,
                     sample_rate=self.config.sample_rate,
                     character_count=len(total_text),
@@ -206,10 +267,13 @@ Make sure both speakers sound natural, engaged, and maintain the conversational 
                     metadata={
                         "host_voice": host_voice,
                         "guest_voice": guest_voice,
+                        "style_prompt": style_prompt,
+                        "temperature": temperature,
                         "model": self.model_name,
                         "dialogue_lines": len(dialogue_lines),
                         "backend": "gemini",
-                        "multi_speaker": True
+                        "multi_speaker": True,
+                        "original_mime_type": mime_type
                     }
                 )
                 
@@ -217,6 +281,8 @@ Make sure both speakers sound natural, engaged, and maintain the conversational 
                 metrics = {
                     'host_voice': host_voice,
                     'guest_voice': guest_voice,
+                    'style_prompt_length': len(style_prompt) if style_prompt else 0,
+                    'temperature': temperature,
                     'dialogue_lines': len(dialogue_lines),
                     'character_count': len(total_text),
                     'audio_size_bytes': len(audio_data),
@@ -258,14 +324,32 @@ Make sure both speakers sound natural, engaged, and maintain the conversational 
             try:
                 logger.info(f"Synthesizing with Gemini TTS: voice={voice_name}, chars={len(clean_text)}")
                 
-                # Create simple prompt for single speaker
-                prompt = f"Generate this text as natural Vietnamese speech: {clean_text}"
+                # For single speaker, use the dialogue format but with one speaker
+                single_speaker_text = f"HOST: {clean_text}"
                 
-                # Generate audio using the same method as multi-speaker
-                audio_data = self._generate_audio_with_retry(prompt, voice_name, voice_name)
+                # Generate audio using multi-speaker method with same voice for both
+                audio_data, mime_type = self._generate_audio_with_retry(single_speaker_text, voice_name, voice_name)
                 
                 if not audio_data:
                     raise TTSError("Received empty audio data from Gemini TTS")
+                
+                # Determine audio format and handle conversion (Google AI Studio approach)
+                file_extension = mimetypes.guess_extension(mime_type)
+                if file_extension is None:
+                    file_extension = ".wav"
+                    # Convert to WAV first using Google AI Studio method
+                    audio_data = self._convert_to_wav(audio_data, mime_type)
+                    audio_format = AudioFormat.WAV
+                    logger.info(f"Converted audio from {mime_type} to WAV format")
+                else:
+                    audio_format = self._detect_audio_format(mime_type)
+                    logger.info(f"Gemini TTS returned {audio_format.value} format (MIME: {mime_type})")
+                
+                # Convert to MP3 if not already MP3
+                if audio_format != AudioFormat.MP3:
+                    audio_data = self._convert_audio_to_mp3(audio_data, audio_format, mime_type)
+                    audio_format = AudioFormat.MP3
+                    logger.info(f"Converted audio to MP3 format")
                 
                 # Estimate duration
                 estimated_duration = len(clean_text) / 150 * 60
@@ -275,7 +359,7 @@ Make sure both speakers sound natural, engaged, and maintain the conversational 
                 
                 result = SynthesisResult(
                     audio_data=audio_data,
-                    format=AudioFormat.MP3,
+                    format=audio_format,
                     duration_seconds=estimated_duration,
                     sample_rate=config.sample_rate,
                     character_count=len(clean_text),
@@ -284,7 +368,8 @@ Make sure both speakers sound natural, engaged, and maintain the conversational 
                         "voice_name": voice_name,
                         "model": self.model_name,
                         "backend": "gemini",
-                        "multi_speaker": False
+                        "multi_speaker": False,
+                        "original_mime_type": mime_type
                     }
                 )
                 
@@ -314,7 +399,6 @@ Make sure both speakers sound natural, engaged, and maintain the conversational 
                 'name': voice_name,
                 'characteristic': voice_info.get('characteristic', ''),
                 'energy': voice_info.get('energy', 'medium'),
-                'speed_preference': voice_info.get('speed_preference', 'medium'),
                 'emotion_range': voice_info.get('emotion_range', 'medium'),
                 'vietnamese_suitability': voice_info.get('vietnamese_suitability', 'unknown'),
                 'podcast_role': voice_info.get('podcast_role', 'general'),
@@ -352,7 +436,6 @@ Make sure both speakers sound natural, engaged, and maintain the conversational 
             'name': voice_id,
             'characteristic': voice_data.get('characteristic', ''),
             'energy': voice_data.get('energy', 'medium'),
-            'speed_preference': voice_data.get('speed_preference', 'medium'),
             'emotion_range': voice_data.get('emotion_range', 'medium'),
             'vietnamese_suitability': voice_data.get('vietnamese_suitability', 'unknown'),
             'podcast_role': voice_data.get('podcast_role', 'general'),
@@ -389,12 +472,209 @@ Make sure both speakers sound natural, engaged, and maintain the conversational 
         return {
             'max_characters_per_request': 25000,  # Conservative estimate for 32k tokens
             'max_requests_per_minute': 60,  # Typical Google API limit
-            'supported_formats': ['mp3'],
+            'supported_formats': ['mp3', 'wav', 'flac'],  # Gemini supports multiple formats
             'supported_sample_rates': [22050, 44100],
             'max_speakers': 2,  # Multi-speaker support limit
             'supported_languages': 24,
             'cost_per_1k_chars': 0.20,
             'max_dialogue_lines': 100,  # Practical limit for podcast generation
             'api_version': 'v1beta',
-            'model': self.model_name
+            'model': self.model_name,
+            'multi_speaker_support': True,  # Now properly supported
+            'streaming_support': False  # Not implemented yet
         }
+    
+    def _detect_audio_format(self, mime_type: str) -> AudioFormat:
+        """Detect audio format from MIME type
+        
+        Args:
+            mime_type: MIME type string from Gemini response
+            
+        Returns:
+            AudioFormat enum value
+        """
+        if not mime_type:
+            logger.warning("No MIME type provided, defaulting to MP3")
+            return AudioFormat.MP3
+            
+        mime_to_format = {
+            'audio/mpeg': AudioFormat.MP3,
+            'audio/mp3': AudioFormat.MP3,
+            'audio/wav': AudioFormat.WAV,
+            'audio/wave': AudioFormat.WAV,
+            'audio/x-wav': AudioFormat.WAV,
+            'audio/flac': AudioFormat.WAV,  # Treat FLAC as WAV for conversion
+            'audio/ogg': AudioFormat.OGG,
+        }
+        
+        # Handle PCM format specifically (Gemini TTS returns this)
+        if mime_type.startswith('audio/L16') or 'pcm' in mime_type.lower():
+            logger.info(f"Detected PCM audio format from MIME type: {mime_type}")
+            return AudioFormat.WAV  # Treat PCM as WAV for processing
+        
+        # Default to MP3 for unknown types
+        detected_format = mime_to_format.get(mime_type.lower(), AudioFormat.MP3)
+        
+        if mime_type.lower() not in mime_to_format:
+            logger.warning(f"Unknown MIME type '{mime_type}', defaulting to MP3 format")
+        
+        logger.debug(f"Detected audio format {detected_format.value} from MIME type: {mime_type}")
+        return detected_format
+    
+    def _convert_to_wav(self, audio_data: bytes, mime_type: str) -> bytes:
+        """Convert audio data to WAV format using Google AI Studio approach
+        
+        Args:
+            audio_data: Raw audio data
+            mime_type: MIME type from Gemini response
+            
+        Returns:
+            WAV-encoded audio data
+        """
+        try:
+            import struct
+            import mimetypes
+            
+            # Use the same conversion approach as Google AI Studio sample
+            parameters = self._parse_audio_mime_type(mime_type)
+            bits_per_sample = parameters["bits_per_sample"]
+            sample_rate = parameters["rate"]
+            num_channels = 1
+            data_size = len(audio_data)
+            bytes_per_sample = bits_per_sample // 8
+            block_align = num_channels * bytes_per_sample
+            byte_rate = sample_rate * block_align
+            chunk_size = 36 + data_size  # 36 bytes for header fields before data chunk size
+
+            # http://soundfile.sapp.org/doc/WaveFormat/
+            header = struct.pack(
+                "<4sI4s4sIHHIIHH4sI",
+                b"RIFF",          # ChunkID
+                chunk_size,       # ChunkSize (total file size - 8 bytes)
+                b"WAVE",          # Format
+                b"fmt ",          # Subchunk1ID
+                16,               # Subchunk1Size (16 for PCM)
+                1,                # AudioFormat (1 for PCM)
+                num_channels,     # NumChannels
+                sample_rate,      # SampleRate
+                byte_rate,        # ByteRate
+                block_align,      # BlockAlign
+                bits_per_sample,  # BitsPerSample
+                b"data",          # Subchunk2ID
+                data_size         # Subchunk2Size (size of audio data)
+            )
+            
+            wav_data = header + audio_data
+            logger.info(f"Converted {len(audio_data)} bytes ({mime_type}) to {len(wav_data)} bytes (WAV)")
+            
+            return wav_data
+            
+        except Exception as e:
+            logger.error(f"Failed to convert audio from {mime_type} to WAV: {e}")
+            # Return original data if conversion fails
+            return audio_data
+    
+    def _parse_audio_mime_type(self, mime_type: str) -> dict:
+        """Parse bits per sample and rate from an audio MIME type string (Google AI Studio approach)
+        
+        Args:
+            mime_type: The audio MIME type string (e.g., "audio/L16;rate=24000")
+            
+        Returns:
+            Dictionary with "bits_per_sample" and "rate" keys
+        """
+        bits_per_sample = 16
+        rate = 24000
+
+        # Extract rate from parameters
+        parts = mime_type.split(";")
+        for param in parts:
+            param = param.strip()
+            if param.lower().startswith("rate="):
+                try:
+                    rate_str = param.split("=", 1)[1]
+                    rate = int(rate_str)
+                except (ValueError, IndexError):
+                    pass  # Keep rate as default
+            elif param.startswith("audio/L"):
+                try:
+                    bits_per_sample = int(param.split("L", 1)[1])
+                except (ValueError, IndexError):
+                    pass  # Keep bits_per_sample as default if conversion fails
+
+        return {"bits_per_sample": bits_per_sample, "rate": rate}
+    
+    def _save_binary_file(self, file_name: str, data: bytes) -> None:
+        """Save binary file (following Google AI Studio pattern)
+        
+        Args:
+            file_name: Name of file to save
+            data: Binary data to save
+        """
+        try:
+            with open(file_name, "wb") as f:
+                f.write(data)
+            logger.info(f"File saved to: {file_name}")
+        except Exception as e:
+            logger.error(f"Failed to save file {file_name}: {e}")
+    
+    def _convert_audio_to_mp3(self, audio_data: bytes, source_format: AudioFormat, mime_type: str = None) -> bytes:
+        """Convert audio data to MP3 format using Google AI Studio compatible approach
+        
+        Args:
+            audio_data: Raw audio data
+            source_format: Source audio format
+            mime_type: Original MIME type for additional format info
+            
+        Returns:
+            MP3-encoded audio data
+        """
+        try:
+            from pydub import AudioSegment
+            
+            logger.debug(f"Converting {len(audio_data)} bytes from {source_format.value} to MP3")
+            
+            # Handle PCM format specifically using Google AI Studio approach
+            if mime_type and (mime_type.startswith('audio/L16') or 'pcm' in mime_type.lower()):
+                # First convert to WAV using Google AI Studio method
+                wav_data = self._convert_to_wav(audio_data, mime_type)
+                
+                # Then load WAV into pydub for MP3 conversion
+                audio_segment = AudioSegment.from_file(
+                    io.BytesIO(wav_data),
+                    format="wav"
+                )
+            else:
+                # Load audio from bytes for other formats
+                audio_segment = AudioSegment.from_file(
+                    io.BytesIO(audio_data),
+                    format=source_format.value
+                )
+            
+            # Ensure audio properties are set correctly
+            if audio_segment.frame_rate != 44100:
+                audio_segment = audio_segment.set_frame_rate(44100)
+            if audio_segment.channels != 1:
+                audio_segment = audio_segment.set_channels(1)  # Mono for podcasts
+            
+            # Convert to MP3
+            output_buffer = io.BytesIO()
+            audio_segment.export(
+                output_buffer,
+                format="mp3",
+                bitrate="192k",
+                parameters=["-q:a", "2"]  # High quality encoding
+            )
+            
+            mp3_data = output_buffer.getvalue()
+            logger.info(f"Converted {len(audio_data)} bytes ({source_format.value}) to {len(mp3_data)} bytes (MP3)")
+            
+            return mp3_data
+            
+        except ImportError:
+            logger.error("pydub not available for audio conversion")
+            return audio_data
+        except Exception as e:
+            logger.error(f"Failed to convert audio from {source_format.value} to MP3: {e}")
+            # Return original data if conversion fails - the audio mixer might still handle it
+            return audio_data

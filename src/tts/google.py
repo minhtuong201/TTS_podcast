@@ -361,4 +361,10 @@ class GoogleCloudTTSBackend(BaseTTSBackend):
             'api_version': 'v1'
         }
     
-    def _detect_gender(self, voice_name: str) -> str: 
+    def _detect_gender(self, voice_name: str) -> str:
+        """Detect gender from voice name"""
+        if any(indicator in voice_name.upper() for indicator in ['A', 'C']):
+            return 'female'
+        elif any(indicator in voice_name.upper() for indicator in ['B', 'D']):
+            return 'male'
+        return 'unknown'

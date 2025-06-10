@@ -136,7 +136,7 @@ def create_tts_backend(backend_name: str, language: str, config: TTSConfig):
         raise ValueError(f"Unknown TTS backend: {backend_name}")
 
 
-def process_tts_synthesis(tts_backend_name: str, dialogue_lines, language_code, voices, output_base_path, logger):
+def process_tts_synthesis(tts_backend_name: str, dialogue_lines, language_code, voices, output_base_path, logger, temperature: float = 1.5):
     """Process TTS synthesis for a given backend and return results"""
     
     # Set voices based on TTS backend
@@ -149,8 +149,8 @@ def process_tts_synthesis(tts_backend_name: str, dialogue_lines, language_code, 
             male_voice = "M0rVwr32hdQ5UXpkI3ni"    # The Hao - Vietnamese male voice
         elif tts_backend_name == 'gemini':
             # Use Vietnamese-optimized voices from Gemini
-            female_voice = "Fenrir"  # Excitable, energetic host
-            male_voice = "Leda"      # Youthful, engaged guest
+            female_voice = "Zephyr"      # Clear, bright host
+            male_voice = "Rasalgethi"    # Engaging, expressive guest
         elif tts_backend_name == 'openai':
             female_voice = "shimmer"  # OpenAI female voice
             male_voice = "onyx"       # OpenAI male voice
@@ -174,7 +174,14 @@ def process_tts_synthesis(tts_backend_name: str, dialogue_lines, language_code, 
             result = tts_backend.synthesize_multi_speaker(
                 dialogue_lines, 
                 host_voice=female_voice, 
-                guest_voice=male_voice
+                guest_voice=male_voice,
+                style_prompt = (
+                    "Both speakers should speak in the Northern Vietnamese dialect, "
+                    "sounding very enthusiastic and youthful. Include natural conversational elements like excitement, curiosity, and occasional laughter. "
+                    "The host should be more energetic and guiding, while the guest should be responsive and engaged. "
+                    "In the script, emotion tags in square brackets '[]' are used to indicate emotions; do NOT read them out loud."
+                ),
+                temperature=temperature
             )
             
             # Create single audio segment for the entire conversation
@@ -310,6 +317,8 @@ Examples:
     parser.add_argument('--log-file', help='Optional log file path')
     parser.add_argument('--keep-temp', action='store_true', 
                        help='Keep temporary audio files')
+    parser.add_argument('--temperature', type=float, default=1.5, 
+                       help='Temperature for Gemini TTS (0.0-2.0, default: 1.5, higher = more variation)')
     
     args = parser.parse_args()
     
@@ -436,7 +445,7 @@ Examples:
         
         for backend in tts_backends:
             logger.info(f"Processing TTS synthesis with {backend}")
-            synthesis_result = process_tts_synthesis(backend, dialogue_lines, language_code, args.voices, output_path, logger)
+            synthesis_result = process_tts_synthesis(backend, dialogue_lines, language_code, args.voices, output_path, logger, args.temperature)
             synthesis_results.append(synthesis_result)
             all_output_files.append(synthesis_result['output_path'])
             total_cost_all += synthesis_result['total_cost']

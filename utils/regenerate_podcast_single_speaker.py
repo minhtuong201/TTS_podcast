@@ -14,13 +14,14 @@ from typing import List, Optional, Dict
 import re
 
 # Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent / "src"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from script_gen import DialogueLine, SpeakerRole
 from tts.base import TTSConfig
 from tts.eleven import ElevenLabsTTSBackend
 from tts.openai import OpenAITTSBackend
 from tts.google import GoogleCloudTTSBackend
+from tts.gemini import GeminiTTSBackend
 from audio_mixer import AudioMixer, AudioSegmentInfo, MixingConfig
 from utils.log_cfg import JSONFormatter, PipelineTimer, log_pipeline_metrics
 
@@ -76,6 +77,8 @@ def create_tts_backend(backend_name: str, config: TTSConfig):
         return OpenAITTSBackend(config)
     elif backend_name == 'google':
         return GoogleCloudTTSBackend(config)
+    elif backend_name == 'gemini':
+        return GeminiTTSBackend(config)
     else:
         raise ValueError(f"Unknown TTS backend: {backend_name}")
 
@@ -89,6 +92,8 @@ def get_available_tts_backends() -> List[str]:
         backends.append('openai')
     if os.getenv('GOOGLE_APPLICATION_CREDENTIALS'):
         backends.append('google')
+    if os.getenv('GEMINI_API_KEY'):
+        backends.append('gemini')
     
     return backends
 
@@ -99,7 +104,7 @@ def main():
     )
     
     parser.add_argument('script_path', help='Path to existing podcast script file')
-    parser.add_argument('--tts', choices=['eleven', 'openai', 'google', 'auto'], 
+    parser.add_argument('--tts', choices=['eleven', 'openai', 'google', 'gemini', 'auto'], 
                        default='auto', help='TTS backend to use (default: auto-select)')
     parser.add_argument('--output', '-o', help='Output MP3 file path')
     parser.add_argument('--male-volume', type=float, default=1.1, 
@@ -183,6 +188,9 @@ def main():
             elif tts_backend_name == 'google':
                 female_voice = "vi-VN-Neural2-A"  # Vietnamese female voice
                 male_voice = "vi-VN-Neural2-D"    # Vietnamese male voice
+            elif tts_backend_name == 'gemini':
+                female_voice = "Zephyr"      # Gemini default host voice
+                male_voice = "Rasalgethi"    # Gemini default guest voice
             else:
                 female_voice = "default_female"
                 male_voice = "default_male"
